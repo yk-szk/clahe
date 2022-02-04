@@ -1,0 +1,19 @@
+[package]
+name = "clahe"
+version = "0.1.0"
+edition = "2021"
+
+description = "CLAHE (Contrast Limited Adaptive Histogram Equalisation)"
+authors = ["Yuki SUZUKI <y-suzuki@radiol.med.osaka-u.ac.jp>"]
+license = "MIT"
+
+[[bin]]
+name = "clahe"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "3", features = ["derive"] }
+log = "0"
+env_logger = "0"
+image = "0.23"
+imageproc = "0"
