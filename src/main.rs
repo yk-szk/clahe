@@ -25,12 +25,21 @@ struct Args {
     /// Clip limit
     #[clap(long = "limit", default_value_t = 40)]
     clip_limit: u32,
+
+    #[clap(short, long, parse(from_occurrences))]
+    verbose: usize,
 }
 
 fn main() {
     let args = Args::parse();
-
-    let env = Env::default().filter_or("LOG_LEVEL", "debug");
+    let log_level = if args.verbose == 0 {
+        "error"
+    } else if args.verbose == 1 {
+        "info"
+    } else {
+        "debug"
+    };
+    let env = Env::default().filter_or("LOG_LEVEL", log_level);
     Builder::from_env(env)
         .format_timestamp(Some(env_logger::TimestampPrecision::Millis))
         .init();
@@ -46,6 +55,6 @@ fn main() {
     )
     .unwrap();
 
-    info!("save {}", args.output);
+    info!("Save {}", args.output);
     output.save(&Path::new(&args.output)).unwrap();
 }
