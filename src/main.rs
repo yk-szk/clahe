@@ -1,10 +1,12 @@
-use std::path::Path;
 use clahe::clahe;
+use std::path::Path;
 
 #[macro_use]
 extern crate log;
 use clap::Parser;
 use env_logger::{Builder, Env};
+use image::error::{ImageFormatHint, UnsupportedError};
+use image::DynamicImage;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -47,12 +49,21 @@ fn main() {
     let im = image::open(&Path::new(&args.input)).unwrap();
 
     info!("CLAHE");
-    let output = clahe(
-        &im.to_luma8(),
-        args.grid_width,
-        args.grid_height,
-        args.clip_limit,
-    )
+    let output = match im {
+        DynamicImage::ImageLuma8(img) => {
+            debug!("u8 input");
+            clahe(&img, args.grid_width, args.grid_height, args.clip_limit)
+        }
+        DynamicImage::ImageLuma16(img) => {
+            debug!("u16 input");
+            clahe(&img, args.grid_width, args.grid_height, args.clip_limit)
+        }
+        _ => {
+            let hint =
+                ImageFormatHint::Name("u8, u16, rgb8, or rgba16 image is expected".to_string());
+            Err(UnsupportedError::from(hint).into())
+        }
+    }
     .unwrap();
 
     info!("Save {}", args.output);

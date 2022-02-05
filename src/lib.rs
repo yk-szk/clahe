@@ -108,8 +108,8 @@ where
         input.clone() // TODO: avoid copying
     };
 
-    let tile_width = input.dimensions().0 / grid_height;
-    let tile_height = input.dimensions().1 / grid_width;
+    let tile_width = input.dimensions().0 / grid_width;
+    let tile_height = input.dimensions().1 / grid_height;
     debug!("Tile size {} x {}", tile_width, tile_height);
     let max_pix_value = *input.iter().max().unwrap();
     let hist_size: usize = usize::max(u8::MAX as usize, max_pix_value.into()) + 1;
@@ -138,11 +138,11 @@ where
 
     let mut hist = vec![0; hist_size as usize];
     unsafe {
-        for slice_idx in 0..grid_width {
-            let slice: &mut LuTType = &mut lookup_tables[(slice_idx * grid_height * lut_size)
+        for slice_idx in 0..grid_height {
+            let slice: &mut LuTType = &mut lookup_tables[(slice_idx * grid_width * lut_size)
                 as usize
-                ..((slice_idx + 1) * grid_height * lut_size) as usize];
-            for row_idx in 0..grid_height {
+                ..((slice_idx + 1) * grid_width * lut_size) as usize];
+            for row_idx in 0..grid_width {
                 let lut: &mut LuTType =
                     &mut slice[(row_idx * lut_size) as usize..((row_idx + 1) * lut_size) as usize];
 
