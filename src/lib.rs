@@ -125,7 +125,7 @@ where
     let lut_size = hist_size as u32;
     let lut_scale = u8::MAX as f32 / (tile_width * tile_height) as f32;
 
-    debug!("calculate lookup tables");
+    debug!("Calculate lookup tables");
     let mut lookup_tables: Vec<u8> = vec![0; (grid_width * grid_height * lut_size) as usize];
 
     let clip_limit = if clip_limit > 0 {
@@ -165,12 +165,12 @@ where
         }
         type FLOAT = f32;
 
-        debug!("apply interpolations");
+        debug!("Apply interpolations");
         let output_ptr = output.as_mut_ptr();
 
         // pre calculate x positions and weights
         let mut lr_luts = vec![(0, 0); input_width as usize];
-        let mut x_weights: Vec<FLOAT> = vec![0.0; input_width as usize];
+        let mut x_weights = vec![0.0; input_width as usize];
         for x in 0..(input_width as usize) {
             let left_x = (x as f64 / tile_width as f64 - 0.5).floor();
             let right_x = std::cmp::min((left_x + 1.0) as u32, grid_height - 1);
@@ -186,7 +186,6 @@ where
             let y_weight = (y as FLOAT / tile_height as FLOAT - 0.5 - top_y as FLOAT) as FLOAT;
             let top_y = top_y as u32; // -0.5f64 => 0u32
             let output_row_ptr = output_ptr.add(y * input_width as usize);
-            // let output_row = &output.as_raw()[y * input_width as usize..(y+1) * input_width as usize];//output_ptr.add(y * input_width as usize);
             let top_lut = &lookup_tables[(top_y * grid_height * lut_size) as usize
                 ..((top_y + 1) * grid_height * lut_size) as usize];
             let bottom_lut = &lookup_tables[(bottom_y * grid_height * lut_size) as usize
@@ -213,7 +212,6 @@ where
                 let intermediate_2 = interpolate(bottom_left, bottom_right, x_weight);
                 let interpolated =
                     interpolate(intermediate_1, intermediate_2, y_weight).round() as u8;
-                // *output_row.get_unchecked_mut(x as usize) = interpolated;
                 *output_row_ptr.add(x as usize) = interpolated;
             }
         }
