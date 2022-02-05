@@ -5,18 +5,27 @@ extern crate log;
 type HistType = [u32];
 type LuTType = [u8];
 
-fn calc_hist<I: GenericImageView>(img: &I, hist: &mut HistType)
-where
-    I::Pixel: 'static,
-    <I::Pixel as Pixel>::Subpixel: Into<usize> + 'static,
+fn calc_tile_hist<T>(
+    img: &ImageBuffer<Luma<T>, Vec<T>>,
+    left: u32,
+    top: u32,
+    width: u32,
+    height: u32,
+    hist: &mut HistType,
+) where
+    T: image::Primitive + Into<usize> + Into<u32> + Ord + 'static,
 {
     hist.fill(0);
-    let (width, height) = img.dimensions();
+    let (full_width, _full_height) = img.dimensions();
+
+    let img_raw = img.as_raw();
     unsafe {
-        for y in 0..height {
-            for x in 0..width {
-                let pix = img.unsafe_get_pixel(x, y);
-                *hist.get_unchecked_mut((pix.channels()[0]).into()) += 1;
+        for y in top..(top + height) {
+            let offset = (y * full_width) as usize;
+            for index in (offset + left as usize)..(offset + left as usize + width as usize) {
+                let pix = *img_raw.get_unchecked(index);
+                let hist_index: usize = pix.into();
+                *hist.get_unchecked_mut(hist_index) += 1;
             }
         }
     }
@@ -139,14 +148,15 @@ where
             for row_idx in 0..grid_height {
                 let lut: &mut LuTType =
                     &mut slice[(row_idx * lut_size) as usize..((row_idx + 1) * lut_size) as usize];
-                let tile = input.view(
+
+                let (left, top, width, height) = (
                     tile_width * row_idx as u32,
                     tile_height * slice_idx as u32,
                     tile_width,
                     tile_height,
                 );
 
-                calc_hist(&tile, hist.as_mut_slice());
+                calc_tile_hist(&input, left, top, width, height, hist.as_mut_slice());
                 if clip_limit > 1 {
                     clip_hist(hist.as_mut_slice(), clip_limit);
                 }
@@ -156,19 +166,20 @@ where
         type FLOAT = f32;
 
         debug!("apply interpolations");
-        let mut left_luts = vec![0; input_width as usize];
-        let mut right_luts = vec![0; input_width as usize];
-        let mut x_weights: Vec<FLOAT> = vec![0.0; input_width as usize];
         let output_ptr = output.as_mut_ptr();
+
+        // pre calculate x positions and weights
+        let mut lr_luts = vec![(0, 0); input_width as usize];
+        let mut x_weights: Vec<FLOAT> = vec![0.0; input_width as usize];
         for x in 0..(input_width as usize) {
             let left_x = (x as f64 / tile_width as f64 - 0.5).floor();
             let right_x = std::cmp::min((left_x + 1.0) as u32, grid_height - 1);
             let x_weight = (x as FLOAT / tile_width as FLOAT - 0.5 - left_x as FLOAT) as FLOAT;
             let left_x = left_x as u32;
-            *left_luts.get_unchecked_mut(x) = left_x * lut_size;
-            *right_luts.get_unchecked_mut(x) = right_x * lut_size;
+            *lr_luts.get_unchecked_mut(x) = (left_x * lut_size, right_x * lut_size);
             *x_weights.get_unchecked_mut(x) = x_weight;
         }
+        // perform interpolation
         for y in 0..(input_height as usize) {
             let top_y = (y as FLOAT / tile_height as FLOAT - 0.5).floor();
             let bottom_y = std::cmp::min((top_y + 1.0) as u32, grid_width - 1);
@@ -185,8 +196,7 @@ where
             for x in 0..(input_width as usize) {
                 let input_pixel: u32 = (*input_row.get_unchecked(x)).into();
                 let x_weight = *x_weights.get_unchecked(x);
-                let left = left_luts.get_unchecked(x);
-                let right = right_luts.get_unchecked(x);
+                let (left, right) = lr_luts.get_unchecked(x);
 
                 let top_left = *top_lut.get_unchecked((input_pixel + left) as usize);
                 let bottom_left = *bottom_lut.get_unchecked((input_pixel + left) as usize);
@@ -314,13 +324,13 @@ mod tests {
         // u8
         let input = imageproc::gray_image!(type: u8, 0,1,2; 2,4,2);
         let mut hist = vec![0u32; *input.iter().max().unwrap() as usize + 1];
-        calc_hist(&input, hist.as_mut_slice());
+        calc_tile_hist(&input, 0, 0, 3, 2, hist.as_mut_slice());
         assert_eq!(hist, vec![1, 1, 3, 0, 1]);
 
         // u16
         let input = imageproc::gray_image!(type: u16, 0,1,2; 2,4,2; 256,258,256);
         let mut hist = vec![0u32; *input.iter().max().unwrap() as usize + 1];
-        calc_hist(&input, hist.as_mut_slice());
+        calc_tile_hist(&input, 0, 0, 3, 3, hist.as_mut_slice());
         let mut right = vec![0u32; *input.iter().max().unwrap() as usize + 1];
         for (i, v) in vec![1, 1, 3, 0, 1].into_iter().enumerate() {
             right[i] = v;
@@ -336,7 +346,7 @@ mod tests {
         // u8
         let input = imageproc::gray_image!(type: u8, 0,1,2; 2,4,2; 2,5,2);
         let mut hist = vec![0u32; *input.iter().max().unwrap() as usize + 1];
-        calc_hist(&input, hist.as_mut_slice());
+        calc_tile_hist(&input, 0, 0, 3, 3, hist.as_mut_slice());
         assert_eq!(hist, vec![1, 1, 5, 0, 1, 1]);
         clip_hist(hist.as_mut_slice(), 3);
         assert_eq!(hist, vec![2, 1, 3, 1, 1, 1]);
@@ -344,7 +354,7 @@ mod tests {
         // u16
         let input = imageproc::gray_image!(type: u16, 0,1,256; 256,4,256; 2,5,2; 256,258,256);
         let mut hist = vec![0u32; *input.iter().max().unwrap() as usize + 1];
-        calc_hist(&input, hist.as_mut_slice());
+        calc_tile_hist(&input, 0, 0, 3, 4, hist.as_mut_slice());
         let mut right = vec![0u32; *input.iter().max().unwrap() as usize + 1];
         for (i, v) in vec![1, 1, 2, 0, 1, 1].into_iter().enumerate() {
             right[i] = v;
@@ -368,7 +378,7 @@ mod tests {
         // u8
         let input = imageproc::gray_image!(type: u8, 0,1,2; 2,4,2);
         let mut hist = vec![0u32; *input.iter().max().unwrap() as usize + 1];
-        calc_hist(&input, hist.as_mut_slice());
+        calc_tile_hist(&input, 0, 0, 3, 2, hist.as_mut_slice());
         assert_eq!(hist, vec![1, 1, 3, 0, 1]);
         let mut lut = vec![0u8; *input.iter().max().unwrap() as usize + 1];
         let scale: f64 = 255.0 / hist.iter().sum::<u32>() as f64;
@@ -378,7 +388,7 @@ mod tests {
         // u16
         let input = imageproc::gray_image!(type: u16, 0,1,256; 256,4,256; 2,5,2; 256,258,256);
         let mut hist = vec![0u32; *input.iter().max().unwrap() as usize + 1];
-        calc_hist(&input, hist.as_mut_slice());
+        calc_tile_hist(&input, 0, 0, 3, 4, hist.as_mut_slice());
 
         let mut lut = vec![0u8; *input.iter().max().unwrap() as usize + 1];
         let scale: f64 = 255.0 / hist.iter().sum::<u32>() as f64;
