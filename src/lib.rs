@@ -98,10 +98,7 @@ where
     let (input_width, input_height) = input.dimensions();
     let mut output = GrayImage::new(input_width, input_height);
 
-    debug!(
-        "original width {}, original height{}",
-        input_width, input_height
-    );
+    debug!("Original size {} x {}", input_width, input_height);
     let input = if input_width % grid_width != 0 || input_height % grid_height != 0 {
         let pad_width = (grid_width - input_width % grid_width) % grid_width;
         let pad_height = (grid_height - input_height % grid_height) % grid_height;
@@ -113,15 +110,15 @@ where
 
     let tile_width = input.dimensions().0 / grid_height;
     let tile_height = input.dimensions().1 / grid_width;
-    debug!("tile width {}, tile height {}", tile_width, tile_height);
+    debug!("Tile size {} x {}", tile_width, tile_height);
     let max_pix_value = *input.iter().max().unwrap();
-    let hist_size = usize::max(u8::MAX as usize, max_pix_value.into()) + 1;
-    // let hist_size: usize = usize::max(u8::MAX as usize, max_pix_value.into()) + 1;
+    let hist_size: usize = usize::max(u8::MAX as usize, max_pix_value.into()) + 1;
     let hist_size = if (hist_size - 1) > u8::MAX as usize {
         u16::MAX as usize
     } else {
         u8::MAX as usize
-    };
+    } + 1;
+    debug!("Hist size {}", hist_size);
     let lut_size = hist_size as u32;
     let lut_scale = u8::MAX as f32 / (tile_width * tile_height) as f32;
 
@@ -173,7 +170,7 @@ where
         let mut x_weights = vec![0.0; input_width as usize];
         for x in 0..(input_width as usize) {
             let left_x = (x as f64 / tile_width as f64 - 0.5).floor();
-            let right_x = std::cmp::min((left_x + 1.0) as u32, grid_height - 1);
+            let right_x = std::cmp::min((left_x + 1.0) as u32, grid_width - 1);
             let x_weight = (x as FLOAT / tile_width as FLOAT - 0.5 - left_x as FLOAT) as FLOAT;
             let left_x = left_x as u32;
             *lr_luts.get_unchecked_mut(x) = (left_x * lut_size, right_x * lut_size);
@@ -182,18 +179,16 @@ where
         // perform interpolation
         for y in 0..(input_height as usize) {
             let top_y = (y as FLOAT / tile_height as FLOAT - 0.5).floor();
-            let bottom_y = std::cmp::min((top_y + 1.0) as u32, grid_width - 1);
+            let bottom_y = std::cmp::min((top_y + 1.0) as u32, grid_height - 1);
             let y_weight = (y as FLOAT / tile_height as FLOAT - 0.5 - top_y as FLOAT) as FLOAT;
             let top_y = top_y as u32; // -0.5f64 => 0u32
             let output_row_ptr = output_ptr.add(y * input_width as usize);
-            let top_lut = &lookup_tables[(top_y * grid_height * lut_size) as usize
-                ..((top_y + 1) * grid_height * lut_size) as usize];
-            let bottom_lut = &lookup_tables[(bottom_y * grid_height * lut_size) as usize
-                ..(bottom_y * grid_height * lut_size) as usize];
-            let input_row =
-                &input.as_raw()[y * input_width as usize..(y + 1) * input_width as usize];
+            let top_lut = &lookup_tables[(top_y * grid_width * lut_size) as usize
+                ..((top_y + 1) * grid_width * lut_size) as usize];
+            let bottom_lut = &lookup_tables[(bottom_y * grid_width * lut_size) as usize
+                ..((bottom_y + 1) * grid_width * lut_size) as usize];
             for x in 0..(input_width as usize) {
-                let input_pixel: u32 = (*input_row.get_unchecked(x)).into();
+                let input_pixel: u32 = input.unsafe_get_pixel(x as u32, y as u32).0[0].into();
                 let x_weight = *x_weights.get_unchecked(x);
                 let (left, right) = lr_luts.get_unchecked(x);
 
