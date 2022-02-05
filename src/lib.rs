@@ -11,13 +11,12 @@ where
     <I::Pixel as Pixel>::Subpixel: Into<usize> + 'static,
 {
     hist.fill(0);
-    let hist_ptr = hist.as_mut_ptr();
     let (width, height) = img.dimensions();
     unsafe {
         for y in 0..height {
             for x in 0..width {
                 let pix = img.unsafe_get_pixel(x, y);
-                *hist_ptr.add((pix.channels()[0]).into()) += 1;
+                *hist.get_unchecked_mut((pix.channels()[0]).into()) += 1;
             }
         }
     }
@@ -26,11 +25,9 @@ where
 fn clip_hist(hist: &mut HistType, limit: u32) {
     let mut clipped: u32 = 0;
 
-    let hist_ptr = hist.as_mut_ptr();
-
     unsafe {
         for i in 0..hist.len() {
-            let count = hist_ptr.add(i);
+            let count = hist.get_unchecked_mut(i);
             if *count > limit {
                 clipped += *count - limit;
                 *count = limit;
@@ -38,43 +35,39 @@ fn clip_hist(hist: &mut HistType, limit: u32) {
         }
     }
 
-    let hist_size = hist.len() as u32;
-    let redist_batch = clipped / hist_size;
+    if clipped > 0 {
+        let hist_size = hist.len() as u32;
+        let redist_batch = clipped / hist_size;
 
-    if redist_batch > 0 {
-        unsafe {
-            for i in 0..hist.len() {
-                let count = hist_ptr.add(i);
-                *count += redist_batch;
+        if redist_batch > 0 {
+            unsafe {
+                for i in 0..hist.len() {
+                    let count = hist.get_unchecked_mut(i);
+                    *count += redist_batch;
+                }
             }
         }
-    }
 
-    let mut residual = (clipped - redist_batch * hist_size) as usize;
-    assert!(residual < hist_size as usize);
-    if residual > 0 {
-        let step = usize::max(1, (hist_size as usize / residual) as usize);
-        for index in (0..hist_size as usize).step_by(step) {
-            unsafe {
-                *hist_ptr.add(index) += 1;
-            }
-            // histogram.channels[index] += 1;
-            residual -= 1;
-            if residual == 0 {
-                break;
+        let residual = (clipped - redist_batch * hist_size) as usize;
+        assert!(residual < hist_size as usize);
+        if residual > 0 {
+            let step = usize::max(1, (hist_size as usize / residual) as usize);
+            let end = step * residual;
+            for index in (0..end as usize).step_by(step) {
+                unsafe {
+                    *hist.get_unchecked_mut(index) += 1;
+                }
             }
         }
     }
 }
 
-fn calc_lut(hist: &HistType, lut: &mut LuTType, scale: f64) {
+fn calc_lut(hist: &HistType, lut: &mut LuTType, scale: f32) {
     let mut cumsum: u32 = 0;
-    let hist_ptr = hist.as_ptr();
-    let lut_ptr = lut.as_mut_ptr();
     unsafe {
         for index in 0..hist.len() {
-            cumsum += *hist_ptr.add(index);
-            *lut_ptr.add(index) = (cumsum as f64 * scale).round() as u8;
+            cumsum += *hist.get_unchecked(index);
+            *lut.get_unchecked_mut(index) = (cumsum as f32 * scale).round() as u8;
         }
     }
 }
@@ -115,9 +108,13 @@ where
     let max_pix_value = *input.iter().max().unwrap();
     let hist_size = usize::max(u8::MAX as usize, max_pix_value.into()) + 1;
     // let hist_size: usize = usize::max(u8::MAX as usize, max_pix_value.into()) + 1;
-    let hist_size = if (hist_size-1) > u8::MAX as usize {u16::MAX as usize} else {u8::MAX as usize};
+    let hist_size = if (hist_size - 1) > u8::MAX as usize {
+        u16::MAX as usize
+    } else {
+        u8::MAX as usize
+    };
     let lut_size = hist_size as u32;
-    let lut_scale = u8::MAX as f64 / (tile_width * tile_height) as f64;
+    let lut_scale = u8::MAX as f32 / (tile_width * tile_height) as f32;
 
     debug!("calculate lookup tables");
     let mut lookup_tables: Vec<u8> = vec![0; (grid_width * grid_height * lut_size) as usize];
@@ -134,7 +131,6 @@ where
     };
 
     let mut hist = vec![0; hist_size as usize];
-    let lut_ptr = lookup_tables.as_mut_ptr();
     unsafe {
         for slice_idx in 0..grid_width {
             let slice: &mut LuTType = &mut lookup_tables[(slice_idx * grid_height * lut_size)
@@ -164,36 +160,38 @@ where
         let mut right_luts = vec![0; input_width as usize];
         let mut x_weights: Vec<FLOAT> = vec![0.0; input_width as usize];
         let output_ptr = output.as_mut_ptr();
-        for x in 0..(output.dimensions().0 as usize) {
+        for x in 0..(input_width as usize) {
             let left_x = (x as f64 / tile_width as f64 - 0.5).floor();
             let right_x = std::cmp::min((left_x + 1.0) as u32, grid_height - 1);
             let x_weight = (x as FLOAT / tile_width as FLOAT - 0.5 - left_x as FLOAT) as FLOAT;
             let left_x = left_x as u32;
-            left_luts[x] = left_x * lut_size;
-            right_luts[x] = right_x * lut_size;
-            x_weights[x] = x_weight;
+            *left_luts.get_unchecked_mut(x) = left_x * lut_size;
+            *right_luts.get_unchecked_mut(x) = right_x * lut_size;
+            *x_weights.get_unchecked_mut(x) = x_weight;
         }
-        let left_luts_ptr = left_luts.as_ptr();
-        let right_luts_ptr = right_luts.as_ptr();
-        let x_weights_ptr = x_weights.as_ptr();
-        for y in 0..(output.dimensions().1 as usize) {
+        for y in 0..(input_height as usize) {
             let top_y = (y as FLOAT / tile_height as FLOAT - 0.5).floor();
             let bottom_y = std::cmp::min((top_y + 1.0) as u32, grid_width - 1);
             let y_weight = (y as FLOAT / tile_height as FLOAT - 0.5 - top_y as FLOAT) as FLOAT;
             let top_y = top_y as u32; // -0.5f64 => 0u32
             let output_row_ptr = output_ptr.add(y * input_width as usize);
-            let top_lut_ptr = lut_ptr.add((top_y * grid_height * lut_size) as usize);
-            let bottom_lut_ptr = lut_ptr.add((bottom_y * grid_height * lut_size) as usize);
-            for x in 0..(output.dimensions().0 as usize) {
-                let input_pixel: u32 = input.unsafe_get_pixel(x as u32, y as u32).0[0].into();
-                let x_weight = *x_weights_ptr.add(x);
+            // let output_row = &output.as_raw()[y * input_width as usize..(y+1) * input_width as usize];//output_ptr.add(y * input_width as usize);
+            let top_lut = &lookup_tables[(top_y * grid_height * lut_size) as usize
+                ..((top_y + 1) * grid_height * lut_size) as usize];
+            let bottom_lut = &lookup_tables[(bottom_y * grid_height * lut_size) as usize
+                ..(bottom_y * grid_height * lut_size) as usize];
+            let input_row =
+                &input.as_raw()[y * input_width as usize..(y + 1) * input_width as usize];
+            for x in 0..(input_width as usize) {
+                let input_pixel: u32 = (*input_row.get_unchecked(x)).into();
+                let x_weight = *x_weights.get_unchecked(x);
+                let left = left_luts.get_unchecked(x);
+                let right = right_luts.get_unchecked(x);
 
-                let top_left = *top_lut_ptr.add((input_pixel + (*left_luts_ptr.add(x))) as usize);
-                let bottom_left =
-                    *bottom_lut_ptr.add((input_pixel + (*left_luts_ptr.add(x))) as usize);
-                let top_right = *top_lut_ptr.add((input_pixel + *(right_luts_ptr.add(x))) as usize);
-                let bottom_right =
-                    *bottom_lut_ptr.add((input_pixel + *(right_luts_ptr.add(x))) as usize);
+                let top_left = *top_lut.get_unchecked((input_pixel + left) as usize);
+                let bottom_left = *bottom_lut.get_unchecked((input_pixel + left) as usize);
+                let top_right = *top_lut.get_unchecked((input_pixel + right) as usize);
+                let bottom_right = *bottom_lut.get_unchecked((input_pixel + right) as usize);
 
                 #[inline]
                 fn interpolate<T: Into<FLOAT>>(left: T, right: T, right_weight: FLOAT) -> FLOAT {
@@ -205,6 +203,7 @@ where
                 let intermediate_2 = interpolate(bottom_left, bottom_right, x_weight);
                 let interpolated =
                     interpolate(intermediate_1, intermediate_2, y_weight).round() as u8;
+                // *output_row.get_unchecked_mut(x as usize) = interpolated;
                 *output_row_ptr.add(x as usize) = interpolated;
             }
         }
@@ -373,7 +372,7 @@ mod tests {
         assert_eq!(hist, vec![1, 1, 3, 0, 1]);
         let mut lut = vec![0u8; *input.iter().max().unwrap() as usize + 1];
         let scale: f64 = 255.0 / hist.iter().sum::<u32>() as f64;
-        calc_lut(hist.as_slice(), lut.as_mut_slice(), scale);
+        calc_lut(hist.as_slice(), lut.as_mut_slice(), scale as f32);
         assert_eq!(lut, vec![43, 85, 213, 213, 255]);
 
         // u16
@@ -383,7 +382,7 @@ mod tests {
 
         let mut lut = vec![0u8; *input.iter().max().unwrap() as usize + 1];
         let scale: f64 = 255.0 / hist.iter().sum::<u32>() as f64;
-        calc_lut(hist.as_slice(), lut.as_mut_slice(), scale);
+        calc_lut(hist.as_slice(), lut.as_mut_slice(), scale as f32);
 
         let mut right = vec![0u8; *input.iter().max().unwrap() as usize + 1];
         for (i, v) in vec![21, 43, 85, 85, 106, 128].into_iter().enumerate() {
