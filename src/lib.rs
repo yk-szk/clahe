@@ -76,13 +76,29 @@ fn calc_lut(hist: &HistType, lut: &mut LuTType, scale: f32) {
     unsafe {
         for index in 0..hist.len() {
             cumsum += *hist.get_unchecked(index);
-            *lut.get_unchecked_mut(index) = (cumsum as f32 * scale).round() as u8;
+            *lut.get_unchecked_mut(index) = round(cumsum as f32 * scale) as u8;
         }
     }
 }
 
+/// Round half to even
+#[cfg(target_arch = "x86_64")]
+unsafe fn round(f: f32) -> i32 {
+    let tmp = core::arch::x86_64::_mm_set_ss(f);
+    core::arch::x86_64::_mm_cvtss_si32(tmp)
+}
+
+/// f32::round
+#[cfg(not(target_arch = "x86_64"))]
+unsafe fn round(f: f32) -> f32 {
+    f.round()
+}
+
+/// The CLAHE implementation below is based OpenCV which was licensed under Apache 2 License.
+
 /// Contrast Limited Adaptive Histogram Equalization (CLAHE)
 ///
+/// For u8 image, return u8 image with pixel value ranging from 0 to 255
 /// # Arguments
 /// - `input` - GrayImage or Gray16Image
 ///
@@ -114,7 +130,7 @@ where
     let max_pix_value = *input.iter().max().unwrap();
     let hist_size: usize = usize::max(u8::MAX as usize, max_pix_value.into()) + 1;
     let hist_size = if (hist_size - 1) > u8::MAX as usize {
-        u16::MAX as usize
+        hist_size //u16::MAX as usize
     } else {
         u8::MAX as usize
     } + 1;
@@ -205,8 +221,8 @@ where
                 }
                 let intermediate_1 = interpolate(top_left, top_right, x_weight);
                 let intermediate_2 = interpolate(bottom_left, bottom_right, x_weight);
-                let interpolated =
-                    interpolate(intermediate_1, intermediate_2, y_weight).round() as u8;
+                let interpolated = interpolate(intermediate_1, intermediate_2, y_weight);
+                let interpolated = round(interpolated) as u8;
                 *output_row_ptr.add(x as usize) = interpolated;
             }
         }
@@ -376,7 +392,8 @@ mod tests {
         let mut lut = vec![0u8; *input.iter().max().unwrap() as usize + 1];
         let scale: f64 = 255.0 / hist.iter().sum::<u32>() as f64;
         calc_lut(hist.as_slice(), lut.as_mut_slice(), scale as f32);
-        assert_eq!(lut, vec![43, 85, 213, 213, 255]);
+        // assert_eq!(lut, vec![43, 85, 213, 213, 255]); // for round half up
+        assert_eq!(lut, vec![42, 85, 212, 212, 255]);
 
         // u16
         let input = imageproc::gray_image!(type: u16, 0,1,256; 256,4,256; 2,5,2; 256,258,256);
@@ -388,7 +405,8 @@ mod tests {
         calc_lut(hist.as_slice(), lut.as_mut_slice(), scale as f32);
 
         let mut right = vec![0u8; *input.iter().max().unwrap() as usize + 1];
-        for (i, v) in vec![21, 43, 85, 85, 106, 128].into_iter().enumerate() {
+        // for (i, v) in vec![21, 43, 85, 85, 106, 128].into_iter().enumerate() { // for round half up
+        for (i, v) in vec![21, 42, 85, 85, 106, 128].into_iter().enumerate() {
             right[i] = v;
         }
         for i in 6..256 {
