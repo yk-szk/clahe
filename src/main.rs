@@ -58,6 +58,14 @@ fn main() {
             debug!("u16 input");
             clahe(&img, args.grid_width, args.grid_height, args.clip_limit)
         }
+        DynamicImage::ImageRgb8(img) => {
+            debug!("rgb input");
+            info!("Convert rgb to gray");
+            let luma = image::GrayImage::from_fn(img.width(), img.height(), |x, y| {
+                image::Luma([img.get_pixel(x, y).0[0]])
+            });
+            clahe(&luma, args.grid_width, args.grid_height, args.clip_limit)
+        }
         _ => {
             let hint =
                 ImageFormatHint::Name("u8, u16, rgb8, or rgba16 image is expected".to_string());
