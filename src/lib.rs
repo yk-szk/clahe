@@ -3,7 +3,6 @@ use image::*;
 extern crate log;
 
 type HistType = [u32];
-type LuTType = [u8];
 
 fn calc_tile_hist<T>(
     img: &ImageBuffer<Luma<T>, Vec<T>>,
@@ -71,48 +70,67 @@ fn clip_hist(hist: &mut HistType, limit: u32) {
     }
 }
 
-fn calc_lut(hist: &HistType, lut: &mut LuTType, scale: f32) {
-    let mut cumsum: u32 = 0;
-    unsafe {
-        for index in 0..hist.len() {
-            cumsum += *hist.get_unchecked(index);
-            *lut.get_unchecked_mut(index) = round(cumsum as f32 * scale) as u8;
-        }
-    }
-}
-
 /// Round half to even
 #[cfg(target_arch = "x86_64")]
 unsafe fn round(f: f32) -> i32 {
     let tmp = core::arch::x86_64::_mm_set_ss(f);
     core::arch::x86_64::_mm_cvtss_si32(tmp)
 }
+#[cfg(target_arch = "x86_64")]
+type RoundOutput = i32;
 
 /// f32::round
 #[cfg(not(target_arch = "x86_64"))]
 unsafe fn round(f: f32) -> f32 {
     f.round()
 }
+#[cfg(not(target_arch = "x86_64"))]
+type RoundOutput = f32;
 
-/// The CLAHE implementation below is based OpenCV which was licensed under Apache 2 License.
+/// Trait to cast i32/f32 to u8/u16.
+/// Needed to make `calc_lut` generic. There maybe more idiomatic solution that doesn't require this trait.
+pub trait CastFrom<T> {
+    fn cast_from(o: RoundOutput) -> T;
+}
+impl CastFrom<u8> for u8 {
+    fn cast_from(o: RoundOutput) -> u8 {
+        o as u8
+    }
+}
+impl CastFrom<u16> for u16 {
+    fn cast_from(o: RoundOutput) -> u16 {
+        o as u16
+    }
+}
+
+fn calc_lut<T: CastFrom<T>>(hist: &HistType, lut: &mut [T], scale: f32) {
+    let mut cumsum: u32 = 0;
+    unsafe {
+        for index in 0..hist.len() {
+            cumsum += *hist.get_unchecked(index);
+            *lut.get_unchecked_mut(index) = T::cast_from(round(cumsum as f32 * scale));
+        }
+    }
+}
 
 /// Contrast Limited Adaptive Histogram Equalization (CLAHE)
 ///
-/// For u8 image, return u8 image with pixel value ranging from 0 to 255
 /// # Arguments
-/// - `input` - GrayImage or Gray16Image
+/// * `input` - GrayImage or Gray16Image
 ///
+/// The CLAHE implementation below is based OpenCV which was licensed under Apache 2 License.
 pub fn clahe<T>(
     input: &ImageBuffer<Luma<T>, Vec<T>>,
     grid_width: u32,
     grid_height: u32,
     clip_limit: u32,
-) -> Result<GrayImage, Box<dyn std::error::Error>>
+) -> Result<ImageBuffer<Luma<T>, Vec<T>>, Box<dyn std::error::Error>>
 where
-    T: image::Primitive + Into<usize> + Into<u32> + Ord + 'static,
+    T: image::Primitive + Into<usize> + Into<u32> + Ord + CastFrom<T> + 'static,
+    f32: From<T>,
 {
     let (input_width, input_height) = input.dimensions();
-    let mut output = GrayImage::new(input_width, input_height);
+    let mut output = ImageBuffer::<Luma<T>, Vec<T>>::new(input_width, input_height);
 
     debug!("Original size {} x {}", input_width, input_height);
     let input = if input_width % grid_width != 0 || input_height % grid_height != 0 {
@@ -128,18 +146,19 @@ where
     let tile_height = input.dimensions().1 / grid_height;
     debug!("Tile size {} x {}", tile_width, tile_height);
     let max_pix_value = *input.iter().max().unwrap();
+
+    // max_pixe_value + 1 is used as the size of the histogram to reduce the computation for clip_hist ans calc_lut.
+    // However, this is different from OpenCV's size (T::Max + 1).
+    // While this difference does not affect test images in tests directories,
     let hist_size: usize = usize::max(u8::MAX as usize, max_pix_value.into()) + 1;
-    let hist_size = if (hist_size - 1) > u8::MAX as usize {
-        hist_size //u16::MAX as usize
-    } else {
-        u8::MAX as usize
-    } + 1;
     debug!("Hist size {}", hist_size);
     let lut_size = hist_size as u32;
-    let lut_scale = u8::MAX as f32 / (tile_width * tile_height) as f32;
+    let lut_scale = (hist_size - 1) as f32 / (tile_width * tile_height) as f32;
 
     debug!("Calculate lookup tables");
-    let mut lookup_tables: Vec<u8> = vec![0; (grid_width * grid_height * lut_size) as usize];
+    let mut lookup_tables: Vec<T> =
+        Vec::with_capacity((grid_width * grid_height * lut_size) as usize);
+    unsafe { lookup_tables.set_len((grid_width * grid_height * lut_size) as usize) }
 
     let clip_limit = if clip_limit > 0 {
         let new_limit = u32::max(
@@ -155,11 +174,10 @@ where
     let mut hist = vec![0; hist_size as usize];
     unsafe {
         for slice_idx in 0..grid_height {
-            let slice: &mut LuTType = &mut lookup_tables[(slice_idx * grid_width * lut_size)
-                as usize
+            let slice = &mut lookup_tables[(slice_idx * grid_width * lut_size) as usize
                 ..((slice_idx + 1) * grid_width * lut_size) as usize];
             for row_idx in 0..grid_width {
-                let lut: &mut LuTType =
+                let lut =
                     &mut slice[(row_idx * lut_size) as usize..((row_idx + 1) * lut_size) as usize];
 
                 let (left, top, width, height) = (
@@ -170,7 +188,7 @@ where
                 );
 
                 calc_tile_hist(&input, left, top, width, height, hist.as_mut_slice());
-                if clip_limit > 1 {
+                if clip_limit >= 1 {
                     clip_hist(hist.as_mut_slice(), clip_limit);
                 }
                 calc_lut(hist.as_mut_slice(), lut, lut_scale);
@@ -222,7 +240,7 @@ where
                 let intermediate_1 = interpolate(top_left, top_right, x_weight);
                 let intermediate_2 = interpolate(bottom_left, bottom_right, x_weight);
                 let interpolated = interpolate(intermediate_1, intermediate_2, y_weight);
-                let interpolated = round(interpolated) as u8;
+                let interpolated = T::cast_from(round(interpolated));
                 *output_row_ptr.add(x as usize) = interpolated;
             }
         }

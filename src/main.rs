@@ -5,7 +5,6 @@ use std::path::Path;
 extern crate log;
 use clap::Parser;
 use env_logger::{Builder, Env};
-use image::error::{ImageFormatHint, UnsupportedError};
 use image::DynamicImage;
 
 #[derive(Parser, Debug)]
@@ -52,11 +51,15 @@ fn main() {
     let output = match im {
         DynamicImage::ImageLuma8(img) => {
             debug!("u8 input");
-            clahe(&img, args.grid_width, args.grid_height, args.clip_limit)
+            DynamicImage::ImageLuma8(
+                clahe(&img, args.grid_width, args.grid_height, args.clip_limit).unwrap(),
+            )
         }
         DynamicImage::ImageLuma16(img) => {
             debug!("u16 input");
-            clahe(&img, args.grid_width, args.grid_height, args.clip_limit)
+            DynamicImage::ImageLuma16(
+                clahe(&img, args.grid_width, args.grid_height, args.clip_limit).unwrap(),
+            )
         }
         DynamicImage::ImageRgb8(img) => {
             debug!("rgb input");
@@ -64,15 +67,14 @@ fn main() {
             let luma = image::GrayImage::from_fn(img.width(), img.height(), |x, y| {
                 image::Luma([img.get_pixel(x, y).0[0]])
             });
-            clahe(&luma, args.grid_width, args.grid_height, args.clip_limit)
+            DynamicImage::ImageLuma8(
+                clahe(&luma, args.grid_width, args.grid_height, args.clip_limit).unwrap(),
+            )
         }
         _ => {
-            let hint =
-                ImageFormatHint::Name("u8, u16, rgb8, or rgba16 image is expected".to_string());
-            Err(UnsupportedError::from(hint).into())
+            panic!("u8, u16, rgb8, or rgba16 image is expected");
         }
-    }
-    .unwrap();
+    };
 
     info!("Save {}", args.output);
     output.save(&Path::new(&args.output)).unwrap();

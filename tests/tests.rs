@@ -21,7 +21,6 @@ fn test_clahe() {
     let input_filename: PathBuf = [test_dir, "tests/input/mandrill.png"].iter().collect();
     let input = image::open(&input_filename).unwrap().to_luma8();
     let output = clahe(&input, 8, 8, 8).unwrap();
-    // output.save("clahe.png").unwrap();
     let expected_filename: PathBuf = [test_dir, "tests/output/mandrill_CLAHE_(8,(8,8)).png"]
         .iter()
         .collect();
@@ -45,10 +44,9 @@ fn test_clahe16() {
         .collect();
     let input = image::open(&input_filename).unwrap().to_luma16();
     let output = clahe(&input, 8, 8, 8).unwrap();
-    // output.save("clahe16.png").unwrap();
     let expected_filename: PathBuf = [test_dir, "tests/output/mandrill_16bit_CLAHE_(8,(8,8)).png"]
         .iter()
         .collect();
-    let expected = image::open(&expected_filename).unwrap().to_luma8();
-    assert_pixels_eq_within!(output, expected, 1); // TODO: exactly equal implementation
+    let expected = image::open(&expected_filename).unwrap().to_luma16();
+    assert_pixels_eq_within!(output, expected, 0);
 }
