@@ -119,18 +119,19 @@ fn calc_lut<T: CastFrom<T>>(hist: &HistType, lut: &mut [T], scale: f32) {
 /// * `input` - GrayImage or Gray16Image
 ///
 /// The CLAHE implementation below is based OpenCV which was licensed under Apache 2 License.
-pub fn clahe<T>(
+pub fn clahe<T, S>(
     input: &ImageBuffer<Luma<T>, Vec<T>>,
     grid_width: u32,
     grid_height: u32,
     clip_limit: u32,
-) -> Result<ImageBuffer<Luma<T>, Vec<T>>, Box<dyn std::error::Error>>
+) -> Result<ImageBuffer<Luma<S>, Vec<S>>, Box<dyn std::error::Error>>
 where
     T: image::Primitive + Into<usize> + Into<u32> + Ord + CastFrom<T> + 'static,
-    f32: From<T>,
+    S: image::Primitive + Into<usize> + Into<u32> + Ord + CastFrom<S> + 'static,
+    f32: From<T> + From<S>,
 {
     let (input_width, input_height) = input.dimensions();
-    let mut output = ImageBuffer::<Luma<T>, Vec<T>>::new(input_width, input_height);
+    let mut output = ImageBuffer::<Luma<S>, Vec<S>>::new(input_width, input_height);
 
     debug!("Original size {} x {}", input_width, input_height);
     let input = if input_width % grid_width != 0 || input_height % grid_height != 0 {
@@ -153,7 +154,7 @@ where
     let hist_size: usize = usize::max(u8::MAX as usize, max_pix_value.into()) + 1;
     debug!("Hist size {}", hist_size);
     let lut_size = hist_size as u32;
-    let lut_scale = (hist_size - 1) as f32 / (tile_width * tile_height) as f32;
+    let lut_scale = f32::from(S::max_value()) / (tile_width * tile_height) as f32;
 
     debug!("Calculate lookup tables");
     let mut lookup_tables: Vec<T> =
@@ -240,7 +241,7 @@ where
                 let intermediate_1 = interpolate(top_left, top_right, x_weight);
                 let intermediate_2 = interpolate(bottom_left, bottom_right, x_weight);
                 let interpolated = interpolate(intermediate_1, intermediate_2, y_weight);
-                let interpolated = T::cast_from(round(interpolated));
+                let interpolated = S::cast_from(round(interpolated));
                 *output_row_ptr.add(x as usize) = interpolated;
             }
         }

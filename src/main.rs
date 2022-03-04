@@ -18,15 +18,17 @@ struct Args {
     /// Grid width
     #[clap(long = "width", default_value_t = 8)]
     grid_width: u32,
-
     /// Grid height
     #[clap(long = "height", default_value_t = 8)]
     grid_height: u32,
-
     /// Clip limit
     #[clap(long = "limit", default_value_t = 40)]
     clip_limit: u32,
 
+    /// Force 8 bits output even for 16 bits input
+    #[clap(short, long)]
+    eight: bool,
+    /// Set verbosity
     #[clap(short, long, parse(from_occurrences))]
     verbose: usize,
 }
@@ -56,10 +58,17 @@ fn main() {
             )
         }
         DynamicImage::ImageLuma16(img) => {
-            debug!("u16 input");
-            DynamicImage::ImageLuma16(
-                clahe(&img, args.grid_width, args.grid_height, args.clip_limit).unwrap(),
-            )
+            if args.eight {
+                debug!("u16 input and u8 output");
+                DynamicImage::ImageLuma8(
+                    clahe(&img, args.grid_width, args.grid_height, args.clip_limit).unwrap(),
+                )
+            } else {
+                debug!("u16 input and u16 output");
+                DynamicImage::ImageLuma16(
+                    clahe(&img, args.grid_width, args.grid_height, args.clip_limit).unwrap(),
+                )
+            }
         }
         DynamicImage::ImageRgb8(img) => {
             debug!("rgb input");
