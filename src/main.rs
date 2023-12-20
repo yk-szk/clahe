@@ -1,5 +1,5 @@
 use clahe::clahe;
-use std::path::Path;
+use std::path::PathBuf;
 
 #[macro_use]
 extern crate log;
@@ -11,9 +11,9 @@ use image::DynamicImage;
 #[clap(author, version, about, long_about = None)]
 struct Args {
     /// Input image filename
-    input: String,
+    input: PathBuf,
     /// Output image filename
-    output: String,
+    output: PathBuf,
 
     /// Grid width
     #[clap(long = "width", default_value_t = 8)]
@@ -28,26 +28,15 @@ struct Args {
     /// Force 8 bits output even for 16 bits input
     #[clap(short, long)]
     eight: bool,
-    /// Set verbosity
-    #[clap(short, long, parse(from_occurrences))]
-    verbose: usize,
 }
 
 fn main() {
     let args = Args::parse();
-    let log_level = if args.verbose == 0 {
-        "error"
-    } else if args.verbose == 1 {
-        "info"
-    } else {
-        "debug"
-    };
-    let env = Env::default().filter_or("LOG_LEVEL", log_level);
-    Builder::from_env(env)
+    Builder::default()
         .format_timestamp(Some(env_logger::TimestampPrecision::Millis))
         .init();
     info!("Load image");
-    let im = image::open(&Path::new(&args.input)).unwrap();
+    let im = image::open(args.input).unwrap();
 
     info!("CLAHE");
     let output = match im {
@@ -85,6 +74,6 @@ fn main() {
         }
     };
 
-    info!("Save {}", args.output);
-    output.save(&Path::new(&args.output)).unwrap();
+    info!("Save {:?}", args.output);
+    output.save(&args.output).unwrap();
 }

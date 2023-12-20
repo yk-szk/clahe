@@ -15,5 +15,10 @@ path = "src/main.rs"
 clap = { version = "3", features = ["derive"] }
 log = "0"
 env_logger = "0"
-image = { version = "0.24", features = ["jpeg", "png"], default-features = false }
+image = { version = "0.24", features = [
+    "jpeg",
+    "png",
+], default-features = false }
+
+[dev-dependencies]
 imageproc = "0"

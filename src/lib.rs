@@ -59,9 +59,9 @@ fn clip_hist(hist: &mut HistType, limit: u32) {
         let residual = (clipped - redist_batch * hist_size) as usize;
         assert!(residual < hist_size as usize);
         if residual > 0 {
-            let step = usize::max(1, (hist_size as usize / residual) as usize);
+            let step = usize::max(1, hist_size as usize / residual);
             let end = step * residual;
-            for index in (0..end as usize).step_by(step) {
+            for index in (0..end).step_by(step) {
                 unsafe {
                     *hist.get_unchecked_mut(index) += 1;
                 }
@@ -126,7 +126,7 @@ pub fn clahe<T, S>(
     clip_limit: u32,
 ) -> Result<ImageBuffer<Luma<S>, Vec<S>>, Box<dyn std::error::Error>>
 where
-    T: image::Primitive + Into<usize> + Into<u32> + Ord + CastFrom<T> + 'static,
+    T: image::Primitive + Into<usize> + Into<u32> + Ord + CastFrom<T> + Default + 'static,
     S: image::Primitive + Into<usize> + Into<u32> + Ord + CastFrom<S> + 'static,
     f32: From<T> + From<S>,
 {
@@ -138,7 +138,7 @@ where
         let pad_width = (grid_width - input_width % grid_width) % grid_width;
         let pad_height = (grid_height - input_height % grid_height) % grid_height;
         debug!("Padding image by w{} and h{}", pad_width, pad_height);
-        pad_image(&input, 0, pad_height, 0, pad_width)
+        pad_image(input, 0, pad_height, 0, pad_width)
     } else {
         input.clone() // TODO: avoid copying
     };
@@ -156,11 +156,6 @@ where
     let lut_size = hist_size as u32;
     let lut_scale = f32::from(S::max_value()) / (tile_width * tile_height) as f32;
 
-    debug!("Calculate lookup tables");
-    let mut lookup_tables: Vec<T> =
-        Vec::with_capacity((grid_width * grid_height * lut_size) as usize);
-    unsafe { lookup_tables.set_len((grid_width * grid_height * lut_size) as usize) }
-
     let clip_limit = if clip_limit > 0 {
         let new_limit = u32::max(
             1,
@@ -172,6 +167,10 @@ where
         0
     };
 
+    debug!("Calculate lookup tables");
+    let mut lookup_tables: Vec<T> =
+        vec![T::default(); (grid_width * grid_height * lut_size) as usize];
+
     let mut hist = vec![0; hist_size as usize];
     unsafe {
         for slice_idx in 0..grid_height {
@@ -182,8 +181,8 @@ where
                     &mut slice[(row_idx * lut_size) as usize..((row_idx + 1) * lut_size) as usize];
 
                 let (left, top, width, height) = (
-                    tile_width * row_idx as u32,
-                    tile_height * slice_idx as u32,
+                    tile_width * row_idx,
+                    tile_height * slice_idx,
                     tile_width,
                     tile_height,
                 );
@@ -195,7 +194,7 @@ where
                 calc_lut(hist.as_mut_slice(), lut, lut_scale);
             }
         }
-        type FLOAT = f32;
+        type Float = f32;
 
         debug!("Apply interpolations");
         let output_ptr = output.as_mut_ptr();
@@ -206,16 +205,16 @@ where
         for x in 0..(input_width as usize) {
             let left_x = (x as f64 / tile_width as f64 - 0.5).floor();
             let right_x = std::cmp::min((left_x + 1.0) as u32, grid_width - 1);
-            let x_weight = (x as FLOAT / tile_width as FLOAT - 0.5 - left_x as FLOAT) as FLOAT;
+            let x_weight = (x as Float / tile_width as Float - 0.5 - left_x as Float) as Float;
             let left_x = left_x as u32;
             *lr_luts.get_unchecked_mut(x) = (left_x * lut_size, right_x * lut_size);
             *x_weights.get_unchecked_mut(x) = x_weight;
         }
         // perform interpolation
         for y in 0..(input_height as usize) {
-            let top_y = (y as FLOAT / tile_height as FLOAT - 0.5).floor();
+            let top_y = (y as Float / tile_height as Float - 0.5).floor();
             let bottom_y = std::cmp::min((top_y + 1.0) as u32, grid_height - 1);
-            let y_weight = (y as FLOAT / tile_height as FLOAT - 0.5 - top_y as FLOAT) as FLOAT;
+            let y_weight = (y as Float / tile_height as Float - 0.5 - top_y as Float) as Float;
             let top_y = top_y as u32; // -0.5f64 => 0u32
             let output_row_ptr = output_ptr.add(y * input_width as usize);
             let top_lut = &lookup_tables[(top_y * grid_width * lut_size) as usize
@@ -233,16 +232,16 @@ where
                 let bottom_right = *bottom_lut.get_unchecked((input_pixel + right) as usize);
 
                 #[inline]
-                fn interpolate<T: Into<FLOAT>>(left: T, right: T, right_weight: FLOAT) -> FLOAT {
-                    let left: FLOAT = left.into();
-                    let right: FLOAT = right.into();
-                    left as FLOAT * (1.0 - right_weight) + right as FLOAT * right_weight
+                fn interpolate<T: Into<Float>>(left: T, right: T, right_weight: Float) -> Float {
+                    let left: Float = left.into();
+                    let right: Float = right.into();
+                    left as Float * (1.0 - right_weight) + right as Float * right_weight
                 }
                 let intermediate_1 = interpolate(top_left, top_right, x_weight);
                 let intermediate_2 = interpolate(bottom_left, bottom_right, x_weight);
                 let interpolated = interpolate(intermediate_1, intermediate_2, y_weight);
                 let interpolated = S::cast_from(round(interpolated));
-                *output_row_ptr.add(x as usize) = interpolated;
+                *output_row_ptr.add(x) = interpolated;
             }
         }
     }
@@ -292,7 +291,7 @@ where
         let src_x = dst_x as i64 - left as i64;
         if src_x < 0 {
             // left
-            src_x.abs() as u32
+            src_x.unsigned_abs() as u32
         } else if (src_x as u32) < input_width {
             // middle
             src_x as u32
@@ -428,8 +427,8 @@ mod tests {
         for (i, v) in vec![21, 42, 85, 85, 106, 128].into_iter().enumerate() {
             right[i] = v;
         }
-        for i in 6..256 {
-            right[i] = 128;
+        for r in right.iter_mut().take(256).skip(6) {
+            *r = 128;
         }
         right[256] = 234;
         right[257] = 234;
