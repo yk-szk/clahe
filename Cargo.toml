@@ -12,9 +12,10 @@ name = "clahe"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "3", features = ["derive"] }
-log = "0"
+anyhow = "1.0.75"
+clap = { version = "4", features = ["derive"] }
 env_logger = "0"
+log = "0"
 image = { version = "0.24", features = [
     "jpeg",
     "png",

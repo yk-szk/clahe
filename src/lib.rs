@@ -124,7 +124,7 @@ pub fn clahe<T, S>(
     grid_width: u32,
     grid_height: u32,
     clip_limit: u32,
-) -> Result<ImageBuffer<Luma<S>, Vec<S>>, Box<dyn std::error::Error>>
+) -> ImageBuffer<Luma<S>, Vec<S>>
 where
     T: image::Primitive + Into<usize> + Into<u32> + Ord + CastFrom<T> + Default + 'static,
     S: image::Primitive + Into<usize> + Into<u32> + Ord + CastFrom<S> + 'static,
@@ -148,9 +148,9 @@ where
     debug!("Tile size {} x {}", tile_width, tile_height);
     let max_pix_value = *input.iter().max().unwrap();
 
-    // max_pixe_value + 1 is used as the size of the histogram to reduce the computation for clip_hist ans calc_lut.
-    // However, this is different from OpenCV's size (T::Max + 1).
-    // While this difference does not affect test images in tests directories,
+    // max_pixe_value + 1 is used as the size of the histogram to reduce the computation for clip_hist and calc_lut.
+    // This is different from OpenCV's size (T::Max + 1).
+    // This difference does not affect test images in tests directories,
     let hist_size: usize = usize::max(u8::MAX as usize, max_pix_value.into()) + 1;
     debug!("Hist size {}", hist_size);
     let lut_size = hist_size as u32;
@@ -246,7 +246,7 @@ where
         }
     }
 
-    Ok(output)
+    output
 }
 
 /// Pad image (copyMakeBorder)
