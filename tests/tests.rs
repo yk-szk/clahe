@@ -26,7 +26,7 @@ fn test_clahe() -> Result<()> {
     let test_dir = test_directory();
     let input_filename = test_dir.join(INPUT_FILENAME);
     let input = image::open(input_filename)?.to_luma8();
-    let output = clahe(&input, 8, 8, 8);
+    let output = clahe(&input, 8, 8, 8, 1.0);
     let expected_filename = test_dir.join("output/mandrill_CLAHE_(8,(8,8)).png");
     let expected = image::open(expected_filename)?.to_luma8();
     #[cfg(target_arch = "x86_64")]
@@ -46,7 +46,7 @@ fn test_clahe16() -> Result<()> {
     let test_dir = test_directory();
     let input_filename = test_dir.join("input/mandrill_16bit.png");
     let input = image::open(input_filename)?.to_luma16();
-    let output = clahe(&input, 8, 8, 8);
+    let output = clahe(&input, 8, 8, 8, 1.0);
     let expected_filename = test_dir.join("output/mandrill_16bit_CLAHE_(8,(8,8)).png");
     let expected = image::open(expected_filename)?.to_luma16();
     assert_pixels_eq_within!(output, expected, 0);

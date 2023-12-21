@@ -5,7 +5,6 @@ use std::path::PathBuf;
 extern crate log;
 use anyhow::{bail, Result};
 use clap::Parser;
-use env_logger::Builder;
 use image::DynamicImage;
 
 #[derive(Parser, Debug)]
@@ -25,6 +24,9 @@ struct Args {
     /// Clip limit
     #[clap(long = "limit", default_value_t = 40)]
     clip_limit: u32,
+    /// Sampling rate for tile
+    #[clap(long = "sample", default_value_t = 1.0)]
+    tile_sample: f64,
 
     /// Force 8 bits output even for 16 bits input
     #[clap(short, long)]
@@ -33,9 +35,10 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    Builder::default()
-        .format_timestamp(Some(env_logger::TimestampPrecision::Millis))
-        .init();
+    // Builder::default()
+    //     .format_timestamp(Some(env_logger::TimestampPrecision::Millis))
+    //     .init();
+    env_logger::init();
     info!("Load image");
     let im = image::open(args.input)?;
 
@@ -48,6 +51,7 @@ fn main() -> Result<()> {
                 args.grid_width,
                 args.grid_height,
                 args.clip_limit,
+                args.tile_sample,
             ))
         }
         DynamicImage::ImageLuma16(img) => {
@@ -58,6 +62,7 @@ fn main() -> Result<()> {
                     args.grid_width,
                     args.grid_height,
                     args.clip_limit,
+                    args.tile_sample,
                 ))
             } else {
                 debug!("u16 input and u16 output");
@@ -66,6 +71,7 @@ fn main() -> Result<()> {
                     args.grid_width,
                     args.grid_height,
                     args.clip_limit,
+                    args.tile_sample,
                 ))
             }
         }
@@ -80,6 +86,7 @@ fn main() -> Result<()> {
                 args.grid_width,
                 args.grid_height,
                 args.clip_limit,
+                args.tile_sample,
             ))
         }
         _ => {
