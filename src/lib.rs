@@ -8,33 +8,6 @@ extern crate log;
 
 type HistType = [u32];
 
-#[allow(dead_code)]
-fn calc_tile_hist<T>(
-    img: &ImageBuffer<Luma<T>, Vec<T>>,
-    left: u32,
-    top: u32,
-    width: u32,
-    height: u32,
-    hist: &mut HistType,
-) where
-    T: image::Primitive + Into<usize> + Into<u32> + Ord + 'static,
-{
-    hist.fill(0);
-    let (full_width, _full_height) = img.dimensions();
-
-    let img_raw = img.as_raw();
-    unsafe {
-        for y in top..(top + height) {
-            let offset = (y * full_width) as usize;
-            for index in (offset + left as usize)..(offset + left as usize + width as usize) {
-                let pix = *img_raw.get_unchecked(index);
-                let hist_index: usize = pix.into();
-                *hist.get_unchecked_mut(hist_index) += 1;
-            }
-        }
-    }
-}
-
 fn clip_hist(hist: &mut HistType, limit: u32) {
     let mut clipped: u32 = 0;
 
@@ -61,48 +34,6 @@ fn clip_hist(hist: &mut HistType, limit: u32) {
             let end = step * residual;
             hist.iter_mut().take(end).step_by(step).for_each(|count| {
                 *count += 1;
-            });
-        }
-    }
-}
-
-#[allow(dead_code)]
-fn clip_hist_g<T>(hist: &mut [T], limit: T)
-where
-    T: PartialOrd
-        + Copy
-        + num_traits::FromPrimitive
-        + num_traits::NumAssign
-        + num_traits::NumOps
-        + num_traits::Zero
-        + num_traits::One,
-    usize: From<T>,
-{
-    let mut clipped: usize = 0;
-
-    hist.iter_mut().for_each(|count| {
-        if *count > limit {
-            clipped += usize::from(*count - limit);
-            *count = limit;
-        }
-    });
-
-    if clipped > 0 {
-        let hist_size = hist.len();
-        let redist_batch = clipped / hist_size;
-
-        if redist_batch > 0 {
-            hist.iter_mut().for_each(|count| {
-                *count += T::from_usize(redist_batch).unwrap();
-            });
-        }
-
-        let residual = clipped - redist_batch * hist_size;
-        if residual > 0 {
-            let step = usize::max(1, hist_size / residual);
-            let end = step * residual;
-            hist.iter_mut().take(end).step_by(step).for_each(|count| {
-                *count += T::one();
             });
         }
     }
@@ -200,10 +131,7 @@ where
     let tile_step_height = tile_height / tile_sample as u32;
     let sampled_grid_width = (input_width - tile_width) / tile_step_width + 1;
     let sampled_grid_height = (input_height - tile_height) / tile_step_height + 1;
-    // let sampled_grid_width = input_width / tile_step_width;
-    // let sampled_grid_height = input_height / tile_step_height;
-    // let sampled_grid_width = (grid_width as f64 * tile_sample).ceil() as u32;
-    // let sampled_grid_height = (grid_height as f64 * tile_sample).ceil() as u32;
+
     debug!(
         "Sampled grid size {} x {}",
         sampled_grid_width, sampled_grid_height
@@ -240,7 +168,6 @@ where
                         hist[hist_index] += 1;
                     });
 
-                // calc_tile_hist(input, left, top, width, height, hist.as_mut_slice());
                 if clip_limit >= 1 {
                     clip_hist(hist.as_mut_slice(), clip_limit);
                 }
@@ -318,14 +245,10 @@ where
     let tile_width = input_width / grid_width;
     let tile_height = input_height / grid_height;
 
-    // let sampled_grid_width = (grid_width as f64 * tile_sample).ceil() as u32;
-    // let sampled_grid_height = (grid_height as f64 * tile_sample).ceil() as u32;
     let tile_step_width = tile_width / tile_sample as u32;
     let tile_step_height = tile_height / tile_sample as u32;
     let sampled_grid_width = (input_width - tile_width) / tile_step_width + 1;
     let sampled_grid_height = (input_height - tile_height) / tile_step_height + 1;
-    // let sampled_grid_width = input_width / tile_step_width;
-    // let sampled_grid_height = input_height / tile_step_height;
 
     if input_width % sampled_grid_width != 0 || input_height % grid_height != 0 {
         let pad_width =
@@ -393,10 +316,9 @@ pub fn image2array_view<T>(input: &ImageBuffer<Luma<T>, Vec<T>>) -> ArrayView2<T
 where
     T: image::Primitive + Into<usize> + Into<u32> + Ord + 'static,
 {
-    let (input_width, input_height) = input.dimensions();
     unsafe {
         ArrayView2::from_shape_ptr(
-            (input_width as usize, input_height as usize),
+            (input.height() as usize, input.width() as usize),
             input.as_ptr(),
         )
     }
@@ -421,7 +343,7 @@ where
 /// * `input` - GrayImage or Gray16Image
 ///
 /// The CLAHE implementation is based on OpenCV, which is licensed under Apache 2 License.
-pub fn clahe<T, S>(
+pub fn clahe_image<T, S>(
     input: &ImageBuffer<Luma<T>, Vec<T>>,
     grid_width: u32,
     grid_height: u32,
@@ -553,43 +475,20 @@ mod tests {
     }
 
     #[test]
-    fn test_calc_hist() {
-        setup();
-        // u8
-        let input = imageproc::gray_image!(type: u8, 0,1,2; 2,4,2);
-        let mut hist = vec![0u32; *input.iter().max().unwrap() as usize + 1];
-        calc_tile_hist(&input, 0, 0, 3, 2, hist.as_mut_slice());
-        assert_eq!(hist, vec![1, 1, 3, 0, 1]);
-
-        // u16
-        let input = imageproc::gray_image!(type: u16, 0,1,2; 2,4,2; 256,258,256);
-        let mut hist = vec![0u32; *input.iter().max().unwrap() as usize + 1];
-        calc_tile_hist(&input, 0, 0, 3, 3, hist.as_mut_slice());
-        let mut right = vec![0u32; *input.iter().max().unwrap() as usize + 1];
-        for (i, v) in vec![1, 1, 3, 0, 1].into_iter().enumerate() {
-            right[i] = v;
-        }
-        right[256] = 2;
-        right[258] = 1;
-
-        assert_eq!(hist, right);
-    }
-
-    #[test]
     fn test_clip_hist() {
         setup();
         // u8
-        let input = imageproc::gray_image!(type: u8, 0,1,2; 2,4,2; 2,5,2);
+        let input = array![[0, 1, 2], [2, 4, 2], [2, 5, 2]];
         let mut hist = vec![0u32; *input.iter().max().unwrap() as usize + 1];
-        calc_tile_hist(&input, 0, 0, 3, 3, hist.as_mut_slice());
+        input.for_each(|i| hist[*i as usize] += 1);
         assert_eq!(hist, vec![1, 1, 5, 0, 1, 1]);
         clip_hist(hist.as_mut_slice(), 3);
         assert_eq!(hist, vec![2, 1, 3, 1, 1, 1]);
 
         // u16
-        let input = imageproc::gray_image!(type: u16, 0,1,256; 256,4,256; 2,5,2; 256,258,256);
+        let input = array![[0, 1, 256], [256, 4, 256], [2, 5, 2], [256, 258, 256]];
         let mut hist = vec![0u32; *input.iter().max().unwrap() as usize + 1];
-        calc_tile_hist(&input, 0, 0, 3, 4, hist.as_mut_slice());
+        input.for_each(|i| hist[*i as usize] += 1);
         let mut right = vec![0u32; *input.iter().max().unwrap() as usize + 1];
         for (i, v) in vec![1, 1, 2, 0, 1, 1].into_iter().enumerate() {
             right[i] = v;
@@ -612,9 +511,9 @@ mod tests {
     fn test_calc_lut() {
         setup();
         // u8
-        let input = imageproc::gray_image!(type: u8, 0,1,2; 2,4,2);
+        let input = array![[0, 1, 2], [2, 4, 2]];
         let mut hist = vec![0u32; *input.iter().max().unwrap() as usize + 1];
-        calc_tile_hist(&input, 0, 0, 3, 2, hist.as_mut_slice());
+        input.for_each(|i| hist[*i as usize] += 1);
         assert_eq!(hist, vec![1, 1, 3, 0, 1]);
         let mut lut = vec![0u8; *input.iter().max().unwrap() as usize + 1];
         let scale: f64 = 255.0 / hist.iter().sum::<u32>() as f64;
@@ -623,9 +522,9 @@ mod tests {
         assert_eq!(lut, vec![42, 85, 212, 212, 255]);
 
         // u16
-        let input = imageproc::gray_image!(type: u16, 0,1,256; 256,4,256; 2,5,2; 256,258,256);
+        let input = array![[0, 1, 256], [256, 4, 256], [2, 5, 2], [256, 258, 256]];
         let mut hist = vec![0u32; *input.iter().max().unwrap() as usize + 1];
-        calc_tile_hist(&input, 0, 0, 3, 4, hist.as_mut_slice());
+        input.for_each(|i| hist[*i as usize] += 1);
 
         let mut lut = vec![0u8; *input.iter().max().unwrap() as usize + 1];
         let scale: f64 = 255.0 / hist.iter().sum::<u32>() as f64;
@@ -662,7 +561,7 @@ mod tests {
     fn _test_clahe_size(width: u32, height: u32, tile_sample: f64) {
         let input = image::GrayImage::new(width, height);
         println!("width, height, tile_sample: {width}, {height}, {tile_sample}");
-        let output = clahe::<u8, u8>(&input, 8, 8, 8, tile_sample);
+        let output = clahe_image::<u8, u8>(&input, 8, 8, 8, tile_sample);
         assert_eq!(output.width(), input.width());
         assert_eq!(output.height(), input.height());
     }
