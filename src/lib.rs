@@ -1,6 +1,8 @@
 use std::usize;
 
 use image::*;
+use ndarray::prelude::*;
+use ndarray_stats::QuantileExt;
 #[macro_use]
 extern crate log;
 
@@ -32,33 +34,6 @@ fn calc_tile_hist<T>(
         }
     }
 }
-
-// fn calc_tile_hist_ndarray<S>(
-//     img: ArrayBase<S, Ix2>,
-//     left: u32,
-//     top: u32,
-//     width: u32,
-//     height: u32,
-//     hist: &mut HistType,
-// ) where
-//     S: ndarray::Data + ndarray::RawData,
-//     S::Elem: std::clone::Clone + Default,
-// {
-//     hist.fill(0);
-//     let (full_width, _full_height) = img.dim();
-
-//     let img_raw = img.into_raw_vec();
-//     unsafe {
-//         for y in top..(top + height) {
-//             let offset = (y * full_width) as usize;
-//             for index in (offset + left as usize)..(offset + left as usize + width as usize) {
-//                 let pix = *img_raw.get_unchecked(index);
-//                 let hist_index: usize = pix.into();
-//                 *hist.get_unchecked_mut(hist_index) += 1;
-//             }
-//         }
-//     }
-// }
 
 fn clip_hist(hist: &mut HistType, limit: u32) {
     let mut clipped: u32 = 0;
@@ -139,16 +114,12 @@ unsafe fn round(f: f32) -> i32 {
     let tmp = core::arch::x86_64::_mm_set_ss(f);
     core::arch::x86_64::_mm_cvtss_si32(tmp)
 }
-#[cfg(target_arch = "x86_64")]
-type RoundOutput = i32;
 
 /// f32::round
 #[cfg(not(target_arch = "x86_64"))]
 unsafe fn round(f: f32) -> f32 {
     f.round()
 }
-#[cfg(not(target_arch = "x86_64"))]
-type RoundOutput = f32;
 
 pub trait RoundFrom {
     fn round_from(f: f32) -> Self;
@@ -166,22 +137,6 @@ impl RoundFrom for u16 {
     }
 }
 
-/// Trait to cast i32/f32 to u8/u16.
-/// Needed to make `calc_lut` generic. There maybe more idiomatic solution that doesn't require this trait.
-pub trait CastFrom<T> {
-    fn cast_from(o: RoundOutput) -> T;
-}
-impl CastFrom<u8> for u8 {
-    fn cast_from(o: RoundOutput) -> u8 {
-        o as u8
-    }
-}
-impl CastFrom<u16> for u16 {
-    fn cast_from(o: RoundOutput) -> u16 {
-        o as u16
-    }
-}
-
 fn calc_lut<T: RoundFrom>(hist: &HistType, lut: &mut [T], scale: f32) {
     let mut cumsum: u32 = 0;
     unsafe {
@@ -191,34 +146,6 @@ fn calc_lut<T: RoundFrom>(hist: &HistType, lut: &mut [T], scale: f32) {
         }
     }
 }
-
-use ndarray::prelude::*;
-use ndarray_stats::QuantileExt;
-
-// fn _clahe_ndarray<S>(
-//     (original_input_width, original_input_height): (u32, u32),
-//     input: ArrayBase<S, Ix2>,
-//     grid_width: u32,
-//     grid_height: u32,
-//     clip_limit: u32,
-//     tile_sample: f64,
-// ) -> Array2<S>
-// where
-//     S: ndarray::DataMut
-//         + ndarray::Data
-//         + ndarray::DataMut
-//         + ndarray::Data
-//         + ndarray::RawData
-//         + num_traits::Zero,
-//     // S::Elem: std::clone::Clone + Default,
-// {
-//     let output = Array2::<S>::zeros((
-//         original_input_width as usize,
-//         original_input_height as usize,
-//     ));
-//     output
-// }
-// use num_traits::bounds::UpperBounded;
 
 fn _clahe_ndarray<A, B, S, T>(
     (original_input_width, original_input_height): (u32, u32),
@@ -373,27 +300,6 @@ where
     output
 }
 
-// fn _type_test<A, B, S, T>(
-//     (original_input_width, original_input_height): (u32, u32),
-//     input: ArrayBase<S, Ix2>,
-// ) -> ArrayBase<T, Ix2>
-// where
-//     S: Clone + ndarray::Data<Elem = A>,
-//     A: Copy + PartialOrd,
-//     T: Clone + Default + ndarray::Data<Elem = B> + num_traits::Zero + RoundFrom,
-//     B: num_traits::Bounded + RoundFrom,
-//     f32: From<S::Elem> + From<T::Elem> + From<T>,
-//     u32: From<S::Elem>,
-//     usize: From<S::Elem>,
-// {
-//     let mut output = Array2::<T>::zeros((
-//         original_input_width as usize,
-//         original_input_height as usize,
-//     ));
-//     output
-// }
-// use ndarray::prelude::*;
-
 pub fn clahe_ndarray<S, T>(
     input: ArrayView2<S>,
     grid_width: u32,
@@ -451,159 +357,6 @@ where
     }
 }
 
-/// CLAHE implementation.
-/// Input shape must be divisible by grid_width and grid_height.
-///
-/// # Arguments
-/// * `original_input_width` - original input width
-/// * `original_input_height` - original input height
-/// * `input` - GrayImage or Gray16Image (padded if needed)
-fn _clahe<T, S>(
-    (original_input_width, original_input_height): (u32, u32),
-    input: &ImageBuffer<Luma<T>, Vec<T>>,
-    grid_width: u32,
-    grid_height: u32,
-    clip_limit: u32,
-    tile_sample: f64,
-) -> ImageBuffer<Luma<S>, Vec<S>>
-where
-    T: image::Primitive
-        + Into<usize>
-        + Into<u32>
-        + Ord
-        + RoundFrom
-        + CastFrom<T>
-        + Default
-        + 'static,
-    S: image::Primitive + Into<usize> + Into<u32> + Ord + RoundFrom + CastFrom<S> + 'static,
-    f32: From<T> + From<S>,
-{
-    debug!("Original size {original_input_width} x {original_input_height}");
-
-    let (input_width, input_height) = input.dimensions();
-    debug!("Input size {input_width} x {input_height}");
-    debug!("Grid size {} x {}", grid_width, grid_height);
-    let tile_width = original_input_width / grid_width;
-    let tile_height = original_input_height / grid_height;
-    debug!("Tile size {} x {}", tile_width, tile_height);
-    let max_pix_value = *input.iter().max().unwrap();
-
-    // max_pixe_value + 1 is used as the size of the histogram to reduce the computation for clip_hist and calc_lut.
-    // This is different from OpenCV's size (T::Max + 1).
-    // This difference does not affect test images in tests directories,
-    let hist_size: usize = usize::max(u8::MAX as usize, max_pix_value.into()) + 1;
-    debug!("Hist size {}", hist_size);
-    let lut_size = hist_size as u32;
-    let lut_scale = f32::from(S::max_value()) / (tile_width * tile_height) as f32;
-
-    let clip_limit = if clip_limit > 0 {
-        let new_limit = u32::max(
-            1,
-            clip_limit * (tile_width * tile_height) / hist_size as u32,
-        ); // OpenCV does this.
-        debug!("New clip limit {}", new_limit);
-        new_limit
-    } else {
-        0
-    };
-    let tile_step_width = tile_width / tile_sample as u32;
-    let tile_step_height = tile_height / tile_sample as u32;
-    let sampled_grid_width = (input_width - tile_width) / tile_step_width + 1;
-    let sampled_grid_height = (input_height - tile_height) / tile_step_height + 1;
-    // let sampled_grid_width = input_width / tile_step_width;
-    // let sampled_grid_height = input_height / tile_step_height;
-    // let sampled_grid_width = (grid_width as f64 * tile_sample).ceil() as u32;
-    // let sampled_grid_height = (grid_height as f64 * tile_sample).ceil() as u32;
-    debug!(
-        "Sampled grid size {} x {}",
-        sampled_grid_width, sampled_grid_height
-    );
-
-    debug!("Tile step size {} x {}", tile_step_width, tile_step_height);
-
-    let mut output =
-        ImageBuffer::<Luma<S>, Vec<S>>::new(original_input_width, original_input_height);
-
-    debug!("Calculate lookup tables");
-    let mut lookup_tables: Vec<T> =
-        vec![T::default(); (sampled_grid_height * sampled_grid_width * lut_size) as usize];
-    let mut hist = vec![0; hist_size];
-    unsafe {
-        for slice_idx in 0..sampled_grid_height {
-            let slice = &mut lookup_tables[(slice_idx * sampled_grid_width * lut_size) as usize
-                ..((slice_idx + 1) * sampled_grid_width * lut_size) as usize];
-            // println!("top: {}", tile_step_height * slice_idx);
-            for row_idx in 0..sampled_grid_width {
-                let lut =
-                    &mut slice[(row_idx * lut_size) as usize..((row_idx + 1) * lut_size) as usize];
-
-                let (left, top, width, height) = (
-                    tile_step_width * row_idx,
-                    tile_step_height * slice_idx,
-                    tile_width,
-                    tile_height,
-                );
-
-                calc_tile_hist(input, left, top, width, height, hist.as_mut_slice());
-                if clip_limit >= 1 {
-                    clip_hist(hist.as_mut_slice(), clip_limit);
-                }
-                calc_lut(hist.as_mut_slice(), lut, lut_scale);
-            }
-        }
-        type Float = f32;
-
-        debug!("Apply interpolations");
-        let output_ptr = output.as_mut_ptr();
-
-        // pre calculate x positions and weights
-        let lr_luts_x_weights = calculate_lut_and_weights(
-            original_input_width,
-            tile_width,
-            tile_step_width,
-            sampled_grid_width,
-            lut_size,
-        );
-        info!(
-            "Max lut index {}",
-            lr_luts_x_weights.last().unwrap().1 / lut_size
-        );
-        // perform interpolation
-        for y in 0..(original_input_height as usize) {
-            let (top_y, bottom_y, y_weight) =
-                calculate_lut_weights_for_position(y, tile_step_height, sampled_grid_height, 1);
-            let output_row_ptr = output_ptr.add(y * original_input_width as usize);
-            let top_lut = &lookup_tables[(top_y * sampled_grid_width * lut_size) as usize
-                ..((top_y + 1) * sampled_grid_width * lut_size) as usize];
-            let bottom_lut = &lookup_tables[(bottom_y * sampled_grid_width * lut_size) as usize
-                ..((bottom_y + 1) * sampled_grid_width * lut_size) as usize];
-            for x in 0..(original_input_width as usize) {
-                let input_pixel: u32 = input.unsafe_get_pixel(x as u32, y as u32).0[0].into();
-                let (left, right, x_weight) = *lr_luts_x_weights.get_unchecked(x);
-
-                let top_left = *top_lut.get_unchecked((input_pixel + left) as usize);
-                let bottom_left = *bottom_lut.get_unchecked((input_pixel + left) as usize);
-                let top_right = *top_lut.get_unchecked((input_pixel + right) as usize);
-                let bottom_right = *bottom_lut.get_unchecked((input_pixel + right) as usize);
-
-                #[inline]
-                fn interpolate<T: Into<Float>>(left: T, right: T, right_weight: Float) -> Float {
-                    let left: Float = left.into();
-                    let right: Float = right.into();
-                    left as Float * (1.0 - right_weight) + right as Float * right_weight
-                }
-                let intermediate_1 = interpolate(top_left, top_right, x_weight);
-                let intermediate_2 = interpolate(bottom_left, bottom_right, x_weight);
-                let interpolated = interpolate(intermediate_1, intermediate_2, y_weight);
-                let interpolated = S::cast_from(round(interpolated));
-                *output_row_ptr.add(x) = interpolated;
-            }
-        }
-    }
-
-    output
-}
-
 fn calculate_lut_and_weights(
     original_input_width: u32,
     _tile_width: u32,
@@ -636,7 +389,7 @@ fn calculate_lut_weights_for_position(
     )
 }
 
-pub fn image2array_view2<T>(input: &ImageBuffer<Luma<T>, Vec<T>>) -> ArrayView2<T>
+pub fn image2array_view<T>(input: &ImageBuffer<Luma<T>, Vec<T>>) -> ArrayView2<T>
 where
     T: image::Primitive + Into<usize> + Into<u32> + Ord + 'static,
 {
@@ -647,6 +400,18 @@ where
             input.as_ptr(),
         )
     }
+}
+
+pub fn array2image<T>(input: Array2<T>) -> ImageBuffer<Luma<T>, Vec<T>>
+where
+    T: image::Primitive + Into<usize> + Into<u32> + Ord + 'static,
+{
+    ImageBuffer::from_vec(
+        input.ncols() as u32,
+        input.nrows() as u32,
+        input.into_raw_vec(),
+    )
+    .unwrap()
 }
 
 /// Contrast Limited Adaptive Histogram Equalization (CLAHE)
@@ -664,164 +429,21 @@ pub fn clahe<T, S>(
     tile_sample: f64,
 ) -> ImageBuffer<Luma<S>, Vec<S>>
 where
-    T: image::Primitive
-        + Into<usize>
-        + Into<u32>
-        + Ord
-        + RoundFrom
-        + CastFrom<T>
-        + Default
-        + 'static,
-    S: image::Primitive + Into<usize> + Into<u32> + Ord + RoundFrom + CastFrom<S> + 'static,
+    T: image::Primitive + Into<usize> + Into<u32> + Ord + RoundFrom + Default + 'static,
+    S: image::Primitive + Into<usize> + Into<u32> + Ord + RoundFrom + 'static,
     f32: From<T> + From<S>,
     u32: From<T>,
     usize: From<T>,
 {
     let (input_width, input_height) = input.dimensions();
     let arr = clahe_ndarray(
-        image2array_view2(input),
+        image2array_view(input),
         grid_width,
         grid_height,
         clip_limit,
         tile_sample,
     );
     ImageBuffer::<Luma<S>, Vec<S>>::from_vec(input_width, input_height, arr.into_raw_vec()).unwrap()
-
-    // let (input_width, input_height) = input.dimensions();
-    // let tile_width = input_width / grid_width;
-    // let tile_height = input_height / grid_height;
-
-    // // let sampled_grid_width = (grid_width as f64 * tile_sample).ceil() as u32;
-    // // let sampled_grid_height = (grid_height as f64 * tile_sample).ceil() as u32;
-    // let tile_step_width = tile_width / tile_sample as u32;
-    // let tile_step_height = tile_height / tile_sample as u32;
-    // let sampled_grid_width = (input_width - tile_width) / tile_step_width + 1;
-    // let sampled_grid_height = (input_height - tile_height) / tile_step_height + 1;
-    // // let sampled_grid_width = input_width / tile_step_width;
-    // // let sampled_grid_height = input_height / tile_step_height;
-
-    // if input_width % sampled_grid_width != 0 || input_height % grid_height != 0 {
-    //     let pad_width =
-    //         (sampled_grid_width - input_width % sampled_grid_width) % sampled_grid_width;
-    //     let pad_height =
-    //         (sampled_grid_height - input_height % sampled_grid_height) % sampled_grid_height;
-    //     debug!(
-    //         "Padding image by {} in width and {} in height",
-    //         pad_width, pad_height
-    //     );
-    //     let padded = pad_image(input, 0, pad_height, 0, pad_width);
-    //     _clahe(
-    //         input.dimensions(),
-    //         &padded,
-    //         grid_width,
-    //         grid_height,
-    //         clip_limit,
-    //         tile_sample,
-    //     )
-    // } else {
-    // let mut output = ImageBuffer::<Luma<S>, Vec<S>>::new(input_width, input_height);
-    // output.copy_from(
-    //     &ImageBuffer::<Luma<S>, Vec<S>>::from_raw(
-    //         input_width,
-    //         input_height,
-    //         arr.into_raw_vec(),
-    //     )
-    //     .unwrap(),
-    // );
-    // }
-}
-
-/// Pad image (copyMakeBorder)
-///
-/// Compatible with OpenCV's copyMakeBorder with `borderType = cv2.BORDER_REFLECT_101`.
-///
-/// # Arguments
-/// * `input` - input image
-/// * `top`, `bottom`, `left`, `right` - padding sizes
-///
-/// # Examples
-///
-/// ```
-/// use clahe::pad_image;
-/// let input = imageproc::gray_image!(type: u8, 0,1,2; 3,4,5);
-/// let output = pad_image(&input, 1, 1, 1, 1);
-/// let expected = imageproc::gray_image!(type:u8, 4,3,4,5,4; 1,0,1,2,1; 4,3,4,5,4; 1,0,1,2,1);
-/// assert_eq!(output, expected);
-/// ```
-pub fn pad_image<T>(
-    input: &ImageBuffer<T, Vec<<T as Pixel>::Subpixel>>,
-    top: u32,
-    bottom: u32,
-    left: u32,
-    right: u32,
-) -> ImageBuffer<T, Vec<<T as Pixel>::Subpixel>>
-where
-    T: image::Pixel + 'static,
-{
-    let (input_width, input_height) = input.dimensions();
-    let (output_width, output_height) = (input_width + left + right, input_height + top + bottom);
-    let mut output = ImageBuffer::new(output_width, output_height);
-    for y in 0..input_height {
-        for x in 0..input_width {
-            unsafe {
-                output.unsafe_put_pixel(x + left, y + top, input.unsafe_get_pixel(x, y));
-            }
-        }
-    }
-
-    let calc_src_x = |dst_x: u32| -> u32 {
-        let src_x = dst_x as i64 - left as i64;
-        if src_x < 0 {
-            // left
-            src_x.unsigned_abs() as u32
-        } else if (src_x as u32) < input_width {
-            // middle
-            src_x as u32
-        } else {
-            // right
-            2 * input_width - src_x as u32 - 2
-        }
-    };
-    // top
-    for y in 0..top {
-        let dst_y = y;
-        let src_y = top - y;
-        for dst_x in 0..output_width {
-            let src_x = calc_src_x(dst_x);
-            unsafe {
-                output.unsafe_put_pixel(dst_x, dst_y, input.unsafe_get_pixel(src_x, src_y));
-            }
-        }
-    }
-    // bottom
-    for y in 0..bottom {
-        let dst_y = y + top + input_height;
-        let src_y = input_height - y - 2;
-        for dst_x in 0..output_width {
-            let src_x = calc_src_x(dst_x);
-            unsafe {
-                output.unsafe_put_pixel(dst_x, dst_y, input.unsafe_get_pixel(src_x, src_y));
-            }
-        }
-    }
-    // middle
-    for dst_y in top..(input_height + top) {
-        let src_y = dst_y - top;
-        for dst_x in 0..left {
-            let src_x = calc_src_x(dst_x);
-            unsafe {
-                output.unsafe_put_pixel(dst_x, dst_y, input.unsafe_get_pixel(src_x, src_y));
-            }
-        }
-        for x in 0..right {
-            let dst_x = x + left + input_width;
-            let src_x = calc_src_x(dst_x);
-            unsafe {
-                output.unsafe_put_pixel(dst_x, dst_y, input.unsafe_get_pixel(src_x, src_y));
-            }
-        }
-    }
-    output
 }
 
 pub fn pad_array<A, S>(
@@ -1021,16 +643,6 @@ mod tests {
         right[257] = 234;
         right[258] = 255;
         assert_eq!(lut, right);
-    }
-
-    #[test]
-    fn test_pad_u16() {
-        setup();
-        let input = imageproc::gray_image!(type: u16, 0,1,2; 3,4,5);
-        let output = pad_image(&input, 1, 1, 1, 1);
-        let expected =
-            imageproc::gray_image!(type: u16, 4,3,4,5,4; 1,0,1,2,1; 4,3,4,5,4; 1,0,1,2,1);
-        assert_eq!(output, expected);
     }
 
     #[test]

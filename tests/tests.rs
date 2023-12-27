@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clahe::{clahe, pad_image};
+use clahe::{clahe, pad_array};
 use imageproc::assert_pixels_eq_within;
 use std::path::PathBuf;
 
@@ -10,11 +10,13 @@ fn test_directory() -> PathBuf {
 }
 
 #[test]
-fn test_pad_image() -> Result<()> {
+fn test_pad() -> Result<()> {
     let test_dir = test_directory();
     let input_filename = test_dir.join(INPUT_FILENAME);
     let input = image::open(input_filename)?.to_luma8();
-    let output = pad_image(&input, 4, 4, 4, 4);
+    let arr = clahe::image2array_view(&input);
+    let padded_arr = pad_array(arr, 4, 4, 4, 4);
+    let output = clahe::array2image(padded_arr);
     let expected_filename = test_dir.join("output/mandrill_BORDER_4_REFLECT_101.png");
     let expected = image::open(expected_filename)?.to_luma8();
     assert_pixels_eq_within!(output, expected, 0);
