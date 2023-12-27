@@ -518,8 +518,16 @@ mod tests {
         let mut lut = vec![0u8; *input.iter().max().unwrap() as usize + 1];
         let scale: f64 = 255.0 / hist.iter().sum::<u32>() as f64;
         calc_lut(hist.as_slice(), lut.as_mut_slice(), scale as f32);
-        // assert_eq!(lut, vec![43, 85, 213, 213, 255]); // for round half up
-        assert_eq!(lut, vec![42, 85, 212, 212, 255]);
+        #[cfg(target_arch = "x86_64")]
+        {
+            // round to even
+            assert_eq!(lut, vec![42, 85, 212, 212, 255]);
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            // round half up
+            assert_eq!(lut, vec![43, 85, 213, 213, 255]);
+        }
 
         // u16
         let input = array![[0, 1, 256], [256, 4, 256], [2, 5, 2], [256, 258, 256]];
@@ -531,9 +539,19 @@ mod tests {
         calc_lut(hist.as_slice(), lut.as_mut_slice(), scale as f32);
 
         let mut right = vec![0u8; *input.iter().max().unwrap() as usize + 1];
-        // for (i, v) in vec![21, 43, 85, 85, 106, 128].into_iter().enumerate() { // for round half up
-        for (i, v) in vec![21, 42, 85, 85, 106, 128].into_iter().enumerate() {
-            right[i] = v;
+        #[cfg(target_arch = "x86_64")]
+        {
+            // round to even
+            for (i, v) in vec![21, 42, 85, 85, 106, 128].into_iter().enumerate() {
+                right[i] = v;
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            // round half up
+            for (i, v) in vec![21, 43, 85, 85, 106, 128].into_iter().enumerate() {
+                right[i] = v;
+            }
         }
         for r in right.iter_mut().take(256).skip(6) {
             *r = 128;
