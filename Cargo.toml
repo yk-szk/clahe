@@ -5,6 +5,7 @@ edition = "2021"
 
 description = "CLAHE (Contrast Limited Adaptive Histogram Equalisation)"
 authors = ["Yuki SUZUKI <y-suzuki@radiol.med.osaka-u.ac.jp>"]
+repository = "https://github.com/ykszk/clahe"
 license = "MIT"
 
 [[bin]]
@@ -24,6 +25,7 @@ ndarray = "0.15.6"
 num-traits = "0.2.17"
 ndarray-stats = "0.5.1"
 coolor = "0.8.0"
+thiserror = "1.0"
 
 [dev-dependencies]
 imageproc = "0"

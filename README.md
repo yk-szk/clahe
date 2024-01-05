@@ -1,5 +1,5 @@
 # CLAHE
-[![codecov](https://codecov.io/gh/yk-szk/clahe/branch/main/graph/badge.svg?token=6288CW47HH)](https://codecov.io/gh/yk-szk/clahe)
+[![codecov](https://codecov.io/gh/ykszk/clahe/branch/main/graph/badge.svg?token=6288CW47HH)](https://codecov.io/gh/ykszk/clahe)
 
 📊 Contrast Limited Adaptive Histogram Equalization
 

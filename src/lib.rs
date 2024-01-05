@@ -3,10 +3,17 @@ use std::usize;
 use image::*;
 use ndarray::prelude::*;
 use ndarray_stats::QuantileExt;
+use thiserror::Error;
 #[macro_use]
 extern crate log;
 
 type HistType = [u32];
+
+#[derive(Error, Debug)]
+pub enum ClaheError {
+    #[error("C-Contiguous array is required")]
+    InvalidMemoryLayout,
+}
 
 fn clip_hist(hist: &mut HistType, limit: u32) {
     let mut clipped: u32 = 0;
@@ -109,7 +116,7 @@ where
 
     let max_pix_value = input.max().unwrap();
 
-    // max_pixe_value + 1 is used as the size of the histogram to reduce the computation for clip_hist and calc_lut.
+    // max_pix_value + 1 is used as the size of the histogram to reduce the computation for clip_hist and calc_lut.
     // This is different from OpenCV's size (T::Max + 1).
     // This difference does not affect test images in tests directories,
     let hist_size: usize = usize::max(u8::MAX as usize, usize::from(*max_pix_value)) + 1;
@@ -144,17 +151,17 @@ where
         vec![B::zero(); (sampled_grid_height * sampled_grid_width * lut_size) as usize];
     let mut hist = vec![0; hist_size];
     unsafe {
-        for slice_idx in 0..sampled_grid_height {
-            let slice = &mut lookup_tables[(slice_idx * sampled_grid_width * lut_size) as usize
-                ..((slice_idx + 1) * sampled_grid_width * lut_size) as usize];
+        for tile_y in 0..sampled_grid_height {
+            let lut_row = &mut lookup_tables[(tile_y * sampled_grid_width * lut_size) as usize
+                ..((tile_y + 1) * sampled_grid_width * lut_size) as usize];
             // println!("top: {}", tile_step_height * slice_idx);
-            for row_idx in 0..sampled_grid_width {
+            for tile_x in 0..sampled_grid_width {
                 let lut =
-                    &mut slice[(row_idx * lut_size) as usize..((row_idx + 1) * lut_size) as usize];
+                    &mut lut_row[(tile_x * lut_size) as usize..((tile_x + 1) * lut_size) as usize];
 
                 let (left, top, width, height) = (
-                    (tile_step_width * row_idx) as usize,
-                    (tile_step_height * slice_idx) as usize,
+                    (tile_step_width * tile_x) as usize,
+                    (tile_step_height * tile_y) as usize,
                     tile_width as usize,
                     tile_height as usize,
                 );
@@ -233,7 +240,7 @@ pub fn clahe_ndarray<S, T>(
     grid_height: u32,
     clip_limit: u32,
     tile_sample: f64,
-) -> Array2<T>
+) -> Result<Array2<T>, ClaheError>
 where
     S: Copy + PartialOrd + num_traits::Zero,
     T: num_traits::Bounded + RoundFrom + Clone + Copy + num_traits::Zero,
@@ -241,6 +248,9 @@ where
     u32: From<S>,
     usize: From<S>,
 {
+    if !input.is_standard_layout() {
+        return Err(ClaheError::InvalidMemoryLayout);
+    }
     let (input_width, input_height) = (input.ncols() as u32, input.nrows() as u32);
     let tile_width = input_width / grid_width;
     let tile_height = input_height / grid_height;
@@ -260,23 +270,23 @@ where
             pad_width, pad_height
         );
         let padded: Array2<S> = pad_array(input, 0, pad_height as usize, 0, pad_width as usize);
-        _clahe_ndarray(
+        Ok(_clahe_ndarray(
             (input_width, input_height),
             padded,
             grid_width,
             grid_height,
             clip_limit,
             tile_sample,
-        )
+        ))
     } else {
-        _clahe_ndarray(
+        Ok(_clahe_ndarray(
             (input_width, input_height),
             input,
             grid_width,
             grid_height,
             clip_limit,
             tile_sample,
-        )
+        ))
     }
 }
 
@@ -349,7 +359,7 @@ pub fn clahe_image<T, S>(
     grid_height: u32,
     clip_limit: u32,
     tile_sample: f64,
-) -> ImageBuffer<Luma<S>, Vec<S>>
+) -> Result<ImageBuffer<Luma<S>, Vec<S>>, ClaheError>
 where
     T: image::Primitive + Into<usize> + Into<u32> + Ord + RoundFrom + Default + 'static,
     S: image::Primitive + Into<usize> + Into<u32> + Ord + RoundFrom + 'static,
@@ -364,8 +374,11 @@ where
         grid_height,
         clip_limit,
         tile_sample,
-    );
-    ImageBuffer::<Luma<S>, Vec<S>>::from_vec(input_width, input_height, arr.into_raw_vec()).unwrap()
+    )?;
+    Ok(
+        ImageBuffer::<Luma<S>, Vec<S>>::from_vec(input_width, input_height, arr.into_raw_vec())
+            .unwrap(),
+    )
 }
 
 pub fn pad_array<A, S>(
@@ -462,6 +475,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use anyhow::Result;
     use pretty_assertions::assert_eq;
     use std::sync::Once;
 
@@ -576,37 +590,42 @@ mod tests {
         assert_eq!(output, expected);
     }
 
-    fn _test_clahe_size(width: u32, height: u32, tile_sample: f64) {
+    fn _test_clahe_size(width: u32, height: u32, tile_sample: f64) -> Result<()> {
         let input = image::GrayImage::new(width, height);
         println!("width, height, tile_sample: {width}, {height}, {tile_sample}");
-        let output = clahe_image::<u8, u8>(&input, 8, 8, 8, tile_sample);
+        let output = clahe_image::<u8, u8>(&input, 8, 8, 8, tile_sample)?;
         assert_eq!(output.width(), input.width());
         assert_eq!(output.height(), input.height());
+        Ok(())
     }
 
-    fn _test_clahe_size_smaple(tile_sample: f64) {
-        _test_clahe_size(848, 1024, tile_sample);
-        _test_clahe_size(848, 1020, tile_sample);
-        _test_clahe_size(1234, 567, tile_sample);
+    fn _test_clahe_size_smaple(tile_sample: f64) -> Result<()> {
+        _test_clahe_size(848, 1024, tile_sample)?;
+        _test_clahe_size(848, 1020, tile_sample)?;
+        _test_clahe_size(1234, 567, tile_sample)?;
         // maybe more random sizes
+        Ok(())
     }
 
     #[test]
-    fn test_clahe_size_1() {
+    fn test_clahe_size_1() -> Result<()> {
         setup();
-        _test_clahe_size_smaple(1.0);
+        _test_clahe_size_smaple(1.0)?;
+        Ok(())
     }
 
     #[test]
-    fn test_clahe_size_2() {
+    fn test_clahe_size_2() -> Result<()> {
         setup();
-        _test_clahe_size_smaple(2.0);
+        _test_clahe_size_smaple(2.0)?;
+        Ok(())
     }
 
     #[test]
-    fn test_clahe_size_4() {
+    fn test_clahe_size_4() -> Result<()> {
         setup();
-        _test_clahe_size_smaple(4.0);
+        _test_clahe_size_smaple(4.0)?;
+        Ok(())
     }
 
     #[test]

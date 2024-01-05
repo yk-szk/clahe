@@ -49,7 +49,7 @@ fn main() -> Result<()> {
                 args.grid_height,
                 args.clip_limit,
                 args.tile_sample,
-            ))
+            )?)
         }
         DynamicImage::ImageLuma16(img) => {
             if args.eight {
@@ -60,7 +60,7 @@ fn main() -> Result<()> {
                     args.grid_height,
                     args.clip_limit,
                     args.tile_sample,
-                ))
+                )?)
             } else {
                 debug!("u16 input and u16 output");
                 DynamicImage::ImageLuma16(clahe_image(
@@ -69,7 +69,7 @@ fn main() -> Result<()> {
                     args.grid_height,
                     args.clip_limit,
                     args.tile_sample,
-                ))
+                )?)
             }
         }
         DynamicImage::ImageRgb8(img) => {
@@ -93,7 +93,7 @@ fn main() -> Result<()> {
                 args.grid_height,
                 args.clip_limit,
                 args.tile_sample,
-            );
+            )?;
             let new_lum = Array1::from_shape_vec(new_lum.len(), new_lum.into_raw_vec())?;
             arr_hsl.zip_mut_with(&new_lum, |hsl, lum| {
                 hsl.l = *lum as f32 / 255.0;
