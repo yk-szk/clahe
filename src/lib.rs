@@ -147,17 +147,22 @@ where
     debug!("Tile step size {} x {}", tile_step_width, tile_step_height);
 
     debug!("Calculate lookup tables");
-    let mut lookup_tables: Vec<B> =
-        vec![B::zero(); (sampled_grid_height * sampled_grid_width * lut_size) as usize];
+    // let mut lookup_tables: Vec<B> =
+    // vec![B::zero(); (sampled_grid_height * sampled_grid_width * lut_size) as usize];
+    let mut lookup_tables: Array3<B> = Array3::zeros((
+        sampled_grid_height as usize,
+        sampled_grid_width as usize,
+        lut_size as usize,
+    ));
     let mut hist = vec![0; hist_size];
     for tile_y in 0..sampled_grid_height {
-        let lut_row = &mut lookup_tables[(tile_y * sampled_grid_width * lut_size) as usize
-            ..((tile_y + 1) * sampled_grid_width * lut_size) as usize];
+        // let lut_row = &mut lookup_tables[(tile_y * sampled_grid_width * lut_size) as usize
+        // ..((tile_y + 1) * sampled_grid_width * lut_size) as usize];
         // let mut lut_row = lookup_tables.slice_mut(s![tile_y as usize, .., ..]);
         // println!("top: {}", tile_step_height * slice_idx);
         for tile_x in 0..sampled_grid_width {
-            let lut =
-                &mut lut_row[(tile_x * lut_size) as usize..((tile_x + 1) * lut_size) as usize];
+            // let lut =
+            //     &mut lut_row[(tile_x * lut_size) as usize..((tile_x + 1) * lut_size) as usize];
 
             let (left, top, width, height) = (
                 (tile_step_width * tile_x) as usize,
@@ -178,9 +183,9 @@ where
             if clip_limit >= 1 {
                 clip_hist(hist.as_mut_slice(), clip_limit);
             }
-            calc_lut(hist.as_mut_slice(), lut, lut_scale);
-            // let mut lut = lookup_tables.slice_mut(s![tile_y as usize, tile_x as usize, ..]);
-            // calc_lut(hist.as_slice(), lut.as_slice_mut().unwrap(), lut_scale);
+            // calc_lut(hist.as_mut_slice(), lut, lut_scale);
+            let mut lut = lookup_tables.slice_mut(s![tile_y as usize, tile_x as usize, ..]);
+            calc_lut(hist.as_slice(), lut.as_slice_mut().unwrap(), lut_scale);
         }
     }
     type Float = f32;
@@ -193,7 +198,7 @@ where
         tile_width,
         tile_step_width,
         sampled_grid_width,
-        lut_size,
+        1,
     );
     info!("Max lut index {}", lr_luts_x_weights.last().unwrap().1);
     // perform interpolation
@@ -208,28 +213,28 @@ where
                 1,
             );
             let output_row_ptr = output_ptr.add(y * original_input_width as usize);
-            let top_lut = &lookup_tables[(top_y * sampled_grid_width * lut_size) as usize
-                ..((top_y + 1) * sampled_grid_width * lut_size) as usize];
-            let bottom_lut = &lookup_tables[(bottom_y * sampled_grid_width * lut_size) as usize
-                ..((bottom_y + 1) * sampled_grid_width * lut_size) as usize];
-            // let top_lut = lookup_tables.slice(s![top_y as usize, .., ..]);
-            // let bottom_lut = lookup_tables.slice(s![bottom_y as usize, .., ..]);
+            // let top_lut = &lookup_tables[(top_y * sampled_grid_width * lut_size) as usize
+            //     ..((top_y + 1) * sampled_grid_width * lut_size) as usize];
+            // let bottom_lut = &lookup_tables[(bottom_y * sampled_grid_width * lut_size) as usize
+            //     ..((bottom_y + 1) * sampled_grid_width * lut_size) as usize];
+            let top_lut = lookup_tables.slice(s![top_y as usize, .., ..]);
+            let bottom_lut = lookup_tables.slice(s![bottom_y as usize, .., ..]);
             for x in 0..(original_input_width as usize) {
                 let input_pixel: u32 = (*input.get((y, x)).unwrap()).into();
                 let (left, right, x_weight) = *lr_luts_x_weights.get_unchecked(x);
 
-                // let top_left = *top_lut.get((left as usize, input_pixel as usize)).unwrap();
-                // let bottom_left = *bottom_lut
-                //     .get((left as usize, input_pixel as usize))
-                //     .unwrap();
-                // let top_right = *top_lut.get((right as usize, input_pixel as usize)).unwrap();
-                // let bottom_right = *bottom_lut
-                //     .get((right as usize, input_pixel as usize))
-                //     .unwrap();
-                let top_left = *top_lut.get_unchecked((input_pixel + left) as usize);
-                let bottom_left = *bottom_lut.get_unchecked((input_pixel + left) as usize);
-                let top_right = *top_lut.get_unchecked((input_pixel + right) as usize);
-                let bottom_right = *bottom_lut.get_unchecked((input_pixel + right) as usize);
+                let top_left = *top_lut.get((left as usize, input_pixel as usize)).unwrap();
+                let bottom_left = *bottom_lut
+                    .get((left as usize, input_pixel as usize))
+                    .unwrap();
+                let top_right = *top_lut.get((right as usize, input_pixel as usize)).unwrap();
+                let bottom_right = *bottom_lut
+                    .get((right as usize, input_pixel as usize))
+                    .unwrap();
+                // let top_left = *top_lut.get_unchecked((input_pixel + left) as usize);
+                // let bottom_left = *bottom_lut.get_unchecked((input_pixel + left) as usize);
+                // let top_right = *top_lut.get_unchecked((input_pixel + right) as usize);
+                // let bottom_right = *bottom_lut.get_unchecked((input_pixel + right) as usize);
 
                 #[inline]
                 fn interpolate<T: Into<Float>>(left: T, right: T, right_weight: Float) -> Float {
