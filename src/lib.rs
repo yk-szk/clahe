@@ -114,26 +114,6 @@ where
         original_input_width as usize,
     ));
 
-    let max_pix_value = input.max().unwrap();
-
-    // max_pix_value + 1 is used as the size of the histogram to reduce the computation for clip_hist and calc_lut.
-    // This is different from OpenCV's size (T::Max + 1).
-    // This difference does not affect test images in tests directories,
-    let hist_size: usize = usize::max(u8::MAX as usize, usize::from(*max_pix_value)) + 1;
-    debug!("Hist size {}", hist_size);
-    let lut_size = hist_size as u32;
-    let lut_scale = f32::from(B::max_value()) / (tile_width * tile_height) as f32;
-
-    let clip_limit = if clip_limit > 0 {
-        let new_limit = u32::max(
-            1,
-            clip_limit * (tile_width * tile_height) / hist_size as u32,
-        ); // OpenCV does this.
-        debug!("New clip limit {}", new_limit);
-        new_limit
-    } else {
-        0
-    };
     let tile_step_width = tile_width / tile_sample as u32;
     let tile_step_height = tile_height / tile_sample as u32;
     let sampled_grid_width = (input_width - tile_width) / tile_step_width + 1;
@@ -147,47 +127,15 @@ where
     debug!("Tile step size {} x {}", tile_step_width, tile_step_height);
 
     debug!("Calculate lookup tables");
-    // let mut lookup_tables: Vec<B> =
-    // vec![B::zero(); (sampled_grid_height * sampled_grid_width * lut_size) as usize];
-    let mut lookup_tables: Array3<B> = Array3::zeros((
-        sampled_grid_height as usize,
-        sampled_grid_width as usize,
-        lut_size as usize,
-    ));
-    let mut hist = vec![0; hist_size];
-    for tile_y in 0..sampled_grid_height {
-        // let lut_row = &mut lookup_tables[(tile_y * sampled_grid_width * lut_size) as usize
-        // ..((tile_y + 1) * sampled_grid_width * lut_size) as usize];
-        // let mut lut_row = lookup_tables.slice_mut(s![tile_y as usize, .., ..]);
-        // println!("top: {}", tile_step_height * slice_idx);
-        for tile_x in 0..sampled_grid_width {
-            // let lut =
-            //     &mut lut_row[(tile_x * lut_size) as usize..((tile_x + 1) * lut_size) as usize];
-
-            let (left, top, width, height) = (
-                (tile_step_width * tile_x) as usize,
-                (tile_step_height * tile_y) as usize,
-                tile_width as usize,
-                tile_height as usize,
-            );
-            hist.fill(0);
-
-            input
-                .slice(s![top..top + height, left..left + width])
-                .iter()
-                .for_each(|pix| {
-                    let hist_index: usize = (*pix).into();
-                    hist[hist_index] += 1;
-                });
-
-            if clip_limit >= 1 {
-                clip_hist(hist.as_mut_slice(), clip_limit);
-            }
-            // calc_lut(hist.as_mut_slice(), lut, lut_scale);
-            let mut lut = lookup_tables.slice_mut(s![tile_y as usize, tile_x as usize, ..]);
-            calc_lut(hist.as_slice(), lut.as_slice_mut().unwrap(), lut_scale);
-        }
-    }
+    let lookup_tables: Array3<B> = calculate_luts(
+        (sampled_grid_height, sampled_grid_width),
+        tile_step_width,
+        tile_step_height,
+        tile_width,
+        tile_height,
+        &input,
+        clip_limit,
+    );
     type Float = f32;
 
     debug!("Apply interpolations");
@@ -213,10 +161,6 @@ where
                 1,
             );
             let output_row_ptr = output_ptr.add(y * original_input_width as usize);
-            // let top_lut = &lookup_tables[(top_y * sampled_grid_width * lut_size) as usize
-            //     ..((top_y + 1) * sampled_grid_width * lut_size) as usize];
-            // let bottom_lut = &lookup_tables[(bottom_y * sampled_grid_width * lut_size) as usize
-            //     ..((bottom_y + 1) * sampled_grid_width * lut_size) as usize];
             let top_lut = lookup_tables.slice(s![top_y as usize, .., ..]);
             let bottom_lut = lookup_tables.slice(s![bottom_y as usize, .., ..]);
             for x in 0..(original_input_width as usize) {
@@ -231,10 +175,6 @@ where
                 let bottom_right = *bottom_lut
                     .get((right as usize, input_pixel as usize))
                     .unwrap();
-                // let top_left = *top_lut.get_unchecked((input_pixel + left) as usize);
-                // let bottom_left = *bottom_lut.get_unchecked((input_pixel + left) as usize);
-                // let top_right = *top_lut.get_unchecked((input_pixel + right) as usize);
-                // let bottom_right = *bottom_lut.get_unchecked((input_pixel + right) as usize);
 
                 #[inline]
                 fn interpolate<T: Into<Float>>(left: T, right: T, right_weight: Float) -> Float {
@@ -252,6 +192,78 @@ where
     }
 
     output
+}
+
+fn calculate_luts<A, B, S>(
+    luts_shape: (u32, u32),
+    tile_step_width: u32,
+    tile_step_height: u32,
+    tile_width: u32,
+    tile_height: u32,
+    input: &ArrayBase<S, Dim<[usize; 2]>>,
+    clip_limit: u32,
+) -> ArrayBase<ndarray::OwnedRepr<B>, Dim<[usize; 3]>>
+where
+    A: Copy + PartialOrd,
+    B: num_traits::Bounded + RoundFrom + Clone + Copy + num_traits::Zero,
+    S: Clone + ndarray::Data<Elem = A>,
+    f32: From<B>,
+    usize: From<A>,
+{
+    let max_pix_value = input.max().unwrap();
+
+    // max_pix_value + 1 is used as the size of the histogram to reduce the computation for clip_hist and calc_lut.
+    // This is different from OpenCV's size (T::Max + 1).
+    // This difference does not affect test images in tests directories,
+    let hist_size: usize = usize::max(u8::MAX as usize, usize::from(*max_pix_value)) + 1;
+    debug!("Hist size {}", hist_size);
+    let lut_size = hist_size as u32;
+
+    let clip_limit = if clip_limit > 0 {
+        let new_limit = u32::max(
+            1,
+            clip_limit * (tile_width * tile_height) / hist_size as u32,
+        ); // OpenCV does this.
+        debug!("New clip limit {}", new_limit);
+        new_limit
+    } else {
+        0
+    };
+
+    let lut_scale = f32::from(B::max_value()) / (tile_width * tile_height) as f32;
+    let (sampled_grid_height, sampled_grid_width) = luts_shape;
+    let mut lookup_tables: Array3<B> = Array3::zeros((
+        sampled_grid_height as usize,
+        sampled_grid_width as usize,
+        lut_size as usize,
+    ));
+    let mut hist = vec![0; hist_size];
+    for tile_y in 0..sampled_grid_height {
+        for tile_x in 0..sampled_grid_width {
+            let (left, top, width, height) = (
+                (tile_step_width * tile_x) as usize,
+                (tile_step_height * tile_y) as usize,
+                tile_width as usize,
+                tile_height as usize,
+            );
+            hist.fill(0);
+
+            input
+                .slice(s![top..top + height, left..left + width])
+                .iter()
+                .for_each(|pix| {
+                    let hist_index: usize = (*pix).into();
+                    hist[hist_index] += 1;
+                });
+
+            if clip_limit >= 1 {
+                clip_hist(hist.as_mut_slice(), clip_limit);
+            }
+            let mut lut = lookup_tables.slice_mut(s![tile_y as usize, tile_x as usize, ..]);
+            calc_lut(hist.as_slice(), lut.as_slice_mut().unwrap(), lut_scale);
+        }
+    }
+    lookup_tables
 }
 
 pub fn clahe_ndarray<S, T>(
