@@ -13,6 +13,8 @@ type HistType = [u32];
 pub enum ClaheError {
     #[error("C-Contiguous array is required")]
     InvalidMemoryLayout,
+    #[error("Tile sample is too small. It must be greater than 1.0")]
+    TileSampleTooSmall,
 }
 
 fn clip_hist(hist: &mut HistType, limit: u32) {
@@ -103,22 +105,31 @@ where
     usize: From<A>,
 {
     let (input_width, input_height) = (input.ncols() as u32, input.nrows() as u32);
+    let (
+        tile_width,
+        tile_height,
+        tile_step_width,
+        tile_step_height,
+        sampled_grid_width,
+        sampled_grid_height,
+    ) = calculate_tile_params(
+        original_input_width,
+        grid_width,
+        original_input_height,
+        grid_height,
+        tile_sample,
+        input_width,
+        input_height,
+    );
+
     debug!("Input size {input_width} x {input_height}");
     debug!("Grid size {} x {}", grid_width, grid_height);
-    let tile_width = original_input_width / grid_width;
-    let tile_height = original_input_height / grid_height;
     debug!("Tile size {} x {}", tile_width, tile_height);
 
     let mut output = ArrayBase::zeros((
         original_input_height as usize,
         original_input_width as usize,
     ));
-
-    let tile_step_width = tile_width / tile_sample as u32;
-    let tile_step_height = tile_height / tile_sample as u32;
-    let sampled_grid_width = (input_width - tile_width) / tile_step_width + 1;
-    let sampled_grid_height = (input_height - tile_height) / tile_step_height + 1;
-
     debug!(
         "Sampled grid size {} x {}",
         sampled_grid_width, sampled_grid_height
@@ -127,15 +138,27 @@ where
     debug!("Tile step size {} x {}", tile_step_width, tile_step_height);
 
     debug!("Calculate lookup tables");
-    let lookup_tables: Array3<B> = calculate_luts(
-        (sampled_grid_height, sampled_grid_width),
-        tile_step_width,
-        tile_step_height,
-        tile_width,
-        tile_height,
-        &input,
-        clip_limit,
-    );
+    let lookup_tables: Array3<B> = if tile_sample > 2.0 {
+        calculate_luts(
+            (sampled_grid_height, sampled_grid_width),
+            tile_step_width,
+            tile_step_height,
+            tile_width,
+            tile_height,
+            &input,
+            clip_limit,
+        )
+    } else {
+        calculate_luts_naive(
+            (sampled_grid_height, sampled_grid_width),
+            tile_step_width,
+            tile_step_height,
+            tile_width,
+            tile_height,
+            &input,
+            clip_limit,
+        )
+    };
     type Float = f32;
 
     debug!("Apply interpolations");
@@ -194,7 +217,37 @@ where
     output
 }
 
-fn calculate_luts<A, B, S>(
+/// Public for benchmarking purpose only.
+pub fn calculate_tile_params(
+    original_input_width: u32,
+    grid_width: u32,
+    original_input_height: u32,
+    grid_height: u32,
+    tile_sample: f64,
+    input_width: u32,
+    input_height: u32,
+) -> (u32, u32, u32, u32, u32, u32) {
+    let tile_width = original_input_width / grid_width;
+    let tile_height = original_input_height / grid_height;
+
+    let tile_step_width = tile_width / tile_sample as u32;
+    let tile_step_height = tile_height / tile_sample as u32;
+    let sampled_grid_width = (input_width - tile_width) / tile_step_width + 1;
+    let sampled_grid_height = (input_height - tile_height) / tile_step_height + 1;
+    (
+        tile_width,
+        tile_height,
+        tile_step_width,
+        tile_step_height,
+        sampled_grid_width,
+        sampled_grid_height,
+    )
+}
+
+/// Calculate lookup tables for each tile.
+/// Naive implementation without optimization for overlapping tiles.
+/// Public for benchmarking purpose only.
+pub fn calculate_luts_naive<A, B, S>(
     luts_shape: (u32, u32),
     tile_step_width: u32,
     tile_step_height: u32,
@@ -266,6 +319,163 @@ where
     lookup_tables
 }
 
+/// Calculate lookup tables for each tile.
+/// Public for benchmarking purpose only.
+pub fn calculate_luts<A, B, S>(
+    luts_shape: (u32, u32),
+    tile_step_width: u32,
+    tile_step_height: u32,
+    tile_width: u32,
+    tile_height: u32,
+    input: &ArrayBase<S, Dim<[usize; 2]>>,
+    clip_limit: u32,
+) -> ArrayBase<ndarray::OwnedRepr<B>, Dim<[usize; 3]>>
+where
+    A: Copy + PartialOrd,
+    B: num_traits::Bounded + RoundFrom + Clone + Copy + num_traits::Zero,
+    S: Clone + ndarray::Data<Elem = A>,
+    f32: From<B>,
+    usize: From<A>,
+{
+    let max_pix_value = input.max().unwrap();
+
+    // max_pix_value + 1 is used as the size of the histogram to reduce the computation for clip_hist and calc_lut.
+    // This is different from OpenCV's size (T::Max + 1).
+    // This difference does not affect test images in tests directories,
+    let hist_size: usize = usize::max(u8::MAX as usize, usize::from(*max_pix_value)) + 1;
+    debug!("Hist size {}", hist_size);
+    let lut_size = hist_size;
+
+    let clip_limit = if clip_limit > 0 {
+        let new_limit = u32::max(
+            1,
+            clip_limit * (tile_width * tile_height) / hist_size as u32,
+        ); // OpenCV does this.
+        debug!("New clip limit {}", new_limit);
+        new_limit
+    } else {
+        0
+    };
+
+    let lut_scale = f32::from(B::max_value()) / (tile_width * tile_height) as f32;
+    let (sampled_grid_height, sampled_grid_width) = luts_shape;
+    let mut lookup_tables: Array3<B> = Array3::zeros((
+        sampled_grid_height as usize,
+        sampled_grid_width as usize,
+        lut_size,
+    ));
+    let mut histograms: Array2<u32> = Array2::zeros((sampled_grid_width as usize, lut_size));
+    for tile_x in 0..sampled_grid_width {
+        if tile_x == 0 {
+            let mut hist = histograms.index_axis_mut(Axis(0), 0);
+            input
+                .slice(s![0..tile_height as usize, 0..tile_width as usize])
+                .iter()
+                .for_each(|pix| {
+                    let hist_index: usize = (*pix).into();
+                    *unsafe { hist.uget_mut(hist_index) } += 1;
+                });
+        } else {
+            let (mut cur_hist, prev_hist) = histograms
+                .multi_slice_mut((s![tile_x as usize, ..], s![(tile_x - 1) as usize, ..]));
+            cur_hist.assign(&prev_hist);
+            let mut hist = histograms.index_axis_mut(Axis(0), tile_x as usize);
+
+            // remove pixels on the left
+            let (left, top, width, height) = (
+                (tile_step_width * (tile_x - 1)) as usize,
+                0,
+                tile_step_width as usize,
+                tile_height as usize,
+            );
+            input
+                .slice(s![top..top + height, left..left + width])
+                .iter()
+                .for_each(|pix| {
+                    let hist_index: usize = (*pix).into();
+                    *unsafe { hist.uget_mut(hist_index) } -= 1;
+                });
+            // add pixels on the right
+            let (left, top, width, height) = (
+                (tile_step_width * (tile_x - 1) + tile_width) as usize,
+                0,
+                tile_step_width as usize,
+                tile_height as usize,
+            );
+            input
+                .slice(s![top..top + height, left..left + width])
+                .iter()
+                .for_each(|pix| {
+                    let hist_index: usize = (*pix).into();
+                    *unsafe { hist.uget_mut(hist_index) } += 1;
+                });
+        }
+
+        // calculate lut
+        let mut hist = histograms
+            .index_axis_mut(Axis(0), tile_x as usize)
+            .to_owned();
+        if clip_limit >= 1 {
+            clip_hist(hist.as_slice_mut().unwrap(), clip_limit);
+        }
+        let mut lut = lookup_tables.slice_mut(s![0, tile_x as usize, ..]);
+        calc_lut(
+            hist.as_slice().unwrap(),
+            lut.as_slice_mut().unwrap(),
+            lut_scale,
+        );
+    }
+    for tile_y in 1..sampled_grid_height {
+        for tile_x in 0..sampled_grid_width {
+            let mut hist = histograms.index_axis_mut(Axis(0), tile_x as usize);
+
+            // remove pixels on the top
+            let (left, top, width, height) = (
+                (tile_step_width * tile_x) as usize,
+                (tile_step_height * (tile_y - 1)) as usize,
+                tile_width as usize,
+                tile_step_height as usize,
+            );
+            input
+                .slice(s![top..top + height, left..left + width])
+                .iter()
+                .for_each(|pix| {
+                    let hist_index: usize = (*pix).into();
+                    *unsafe { hist.uget_mut(hist_index) } -= 1;
+                });
+
+            // add pixels on the bottom
+            let (left, top, width, height) = (
+                (tile_step_width * tile_x) as usize,
+                (tile_step_height * (tile_y - 1) + tile_height) as usize,
+                tile_width as usize,
+                tile_step_height as usize,
+            );
+            input
+                .slice(s![top..top + height, left..left + width])
+                .iter()
+                .for_each(|pix| {
+                    let hist_index: usize = (*pix).into();
+                    *unsafe { hist.uget_mut(hist_index) } += 1;
+                });
+
+            let mut hist = histograms
+                .index_axis_mut(Axis(0), tile_x as usize)
+                .to_owned();
+            if clip_limit >= 1 {
+                clip_hist(hist.as_slice_mut().unwrap(), clip_limit);
+            }
+            let mut lut = lookup_tables.slice_mut(s![tile_y as usize, tile_x as usize, ..]);
+            calc_lut(
+                hist.as_slice().unwrap(),
+                lut.as_slice_mut().unwrap(),
+                lut_scale,
+            );
+        }
+    }
+    lookup_tables
+}
+
 pub fn clahe_ndarray<S, T>(
     input: ArrayView2<S>,
     grid_width: u32,
@@ -280,17 +490,29 @@ where
     u32: From<S>,
     usize: From<S>,
 {
+    if tile_sample < 1.0 {
+        return Err(ClaheError::TileSampleTooSmall);
+    }
     if !input.is_standard_layout() {
         return Err(ClaheError::InvalidMemoryLayout);
     }
     let (input_width, input_height) = (input.ncols() as u32, input.nrows() as u32);
-    let tile_width = input_width / grid_width;
-    let tile_height = input_height / grid_height;
-
-    let tile_step_width = tile_width / tile_sample as u32;
-    let tile_step_height = tile_height / tile_sample as u32;
-    let sampled_grid_width = (input_width - tile_width) / tile_step_width + 1;
-    let sampled_grid_height = (input_height - tile_height) / tile_step_height + 1;
+    let (
+        _tile_width,
+        _tile_height,
+        _tile_step_width,
+        _tile_step_height,
+        sampled_grid_width,
+        sampled_grid_height,
+    ) = calculate_tile_params(
+        input_width,
+        grid_width,
+        input_height,
+        grid_height,
+        tile_sample,
+        input_width,
+        input_height,
+    );
 
     if input_width % sampled_grid_width != 0 || input_height % grid_height != 0 {
         let pad_width =
@@ -519,6 +741,7 @@ where
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
+    use ndarray_rand::{rand_distr::Uniform, RandomExt};
     use pretty_assertions::assert_eq;
     use std::sync::Once;
 
@@ -725,5 +948,53 @@ mod tests {
                 (2, 2, 0.5),
             ]
         );
+    }
+
+    #[test]
+    fn test_luts() -> Result<()> {
+        let size = 512;
+        let arr: Array2<u8> =
+            Array2::random((size, size), Uniform::new(0., 255.)).mapv(|e| e as u8);
+        let grid_width = 8;
+        let grid_height = 8;
+        let clip_limit = 40;
+        for tile_sample in [1.0, 2.0, 3.0] {
+            let (
+                tile_width,
+                tile_height,
+                tile_step_width,
+                tile_step_height,
+                sampled_grid_width,
+                sampled_grid_height,
+            ) = calculate_tile_params(
+                size as u32,
+                grid_width,
+                size as u32,
+                grid_height,
+                tile_sample,
+                size as u32,
+                size as u32,
+            );
+            let expected: Array3<u8> = calculate_luts_naive(
+                (sampled_grid_height, sampled_grid_width),
+                tile_step_width,
+                tile_step_height,
+                tile_width,
+                tile_height,
+                &arr,
+                clip_limit,
+            );
+            let calculated: Array3<u8> = calculate_luts(
+                (sampled_grid_height, sampled_grid_width),
+                tile_step_width,
+                tile_step_height,
+                tile_width,
+                tile_height,
+                &arr,
+                clip_limit,
+            );
+            assert_eq!(expected, calculated);
+        }
+        Ok(())
     }
 }
