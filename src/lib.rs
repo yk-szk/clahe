@@ -138,7 +138,7 @@ where
     debug!("Tile step size {} x {}", tile_step_width, tile_step_height);
 
     debug!("Calculate lookup tables");
-    let lookup_tables: Array3<B> = if tile_sample > 2.0 {
+    let lookup_tables: Array3<B> = if tile_sample >= 2.0 {
         calculate_luts(
             (sampled_grid_height, sampled_grid_width),
             tile_step_width,
@@ -244,6 +244,17 @@ pub fn calculate_tile_params(
     )
 }
 
+/// hist_size is either u8::MAX or u16::MAX in OpenCV's implementation but not in this implementation.
+fn calculate_clip_limit(clip_limit: u32, tile_width: u32, tile_height: u32, hist_size: u32) -> u32 {
+    if clip_limit > 0 {
+        let new_limit = u32::max(1, clip_limit * (tile_width * tile_height) / hist_size);
+        debug!("New clip limit {}", new_limit);
+        new_limit
+    } else {
+        0
+    }
+}
+
 /// Calculate lookup tables for each tile.
 /// Naive implementation without optimization for overlapping tiles.
 /// Public for benchmarking purpose only.
@@ -272,16 +283,7 @@ where
     debug!("Hist size {}", hist_size);
     let lut_size = hist_size as u32;
 
-    let clip_limit = if clip_limit > 0 {
-        let new_limit = u32::max(
-            1,
-            clip_limit * (tile_width * tile_height) / hist_size as u32,
-        ); // OpenCV does this.
-        debug!("New clip limit {}", new_limit);
-        new_limit
-    } else {
-        0
-    };
+    let clip_limit = calculate_clip_limit(clip_limit, tile_width, tile_height, hist_size as u32);
 
     let lut_scale = f32::from(B::max_value()) / (tile_width * tile_height) as f32;
     let (sampled_grid_height, sampled_grid_width) = luts_shape;
@@ -346,16 +348,7 @@ where
     debug!("Hist size {}", hist_size);
     let lut_size = hist_size;
 
-    let clip_limit = if clip_limit > 0 {
-        let new_limit = u32::max(
-            1,
-            clip_limit * (tile_width * tile_height) / hist_size as u32,
-        ); // OpenCV does this.
-        debug!("New clip limit {}", new_limit);
-        new_limit
-    } else {
-        0
-    };
+    let clip_limit = calculate_clip_limit(clip_limit, tile_width, tile_height, hist_size as u32);
 
     let lut_scale = f32::from(B::max_value()) / (tile_width * tile_height) as f32;
     let (sampled_grid_height, sampled_grid_width) = luts_shape;
@@ -474,6 +467,138 @@ where
         }
     }
     lookup_tables
+}
+
+pub fn clahe_wo_interpolation<S, T>(
+    input: ArrayView2<S>,
+    tile_width: u32,
+    tile_height: u32,
+    clip_limit: u32,
+) -> Result<Array2<T>, ClaheError>
+where
+    S: Copy + PartialOrd + num_traits::Zero,
+    T: num_traits::Bounded + RoundFrom + Clone + Copy + num_traits::Zero,
+    f32: From<S> + From<T>,
+    u32: From<S>,
+    usize: From<S>,
+{
+    let (input_width, input_height) = (input.ncols() as u32, input.nrows() as u32);
+    debug!("Input size {input_width} x {input_height}");
+    debug!("Tile size {} x {}", tile_width, tile_height);
+
+    let mut output = Array2::zeros((input_height as usize, input_width as usize));
+    let max_pix_value = input.max().unwrap();
+    let hist_size: usize = usize::max(u8::MAX as usize, usize::from(*max_pix_value)) + 1;
+    debug!("Hist size {}", hist_size);
+    let lut_scale = f32::from(T::max_value()) / (tile_width * tile_height) as f32;
+    let clip_limit = calculate_clip_limit(clip_limit, tile_width, tile_height, hist_size as u32);
+
+    let mut hist: Array1<u32> = Array1::zeros(hist_size);
+    let mut hist_clipped: Array1<u32> = Array1::zeros(hist_size);
+    let mut hist_prev_row: Array1<u32> = Array1::zeros(hist_size);
+    let mut lut = Array1::zeros(hist_size);
+
+    // use full tile for the first histogram
+    let top_left_tile = input.slice(s![0..tile_height as usize, 0..tile_width as usize]);
+    top_left_tile.for_each(|pix| {
+        let hist_index: usize = (*pix).into();
+        *unsafe { hist_prev_row.uget_mut(hist_index) } += 1;
+    });
+    for y in 0..input_height {
+        hist.assign(&hist_prev_row);
+        let tile_top = if y < tile_height / 2 {
+            0
+        } else {
+            y - tile_height / 2
+        };
+        if tile_top > 0 && tile_top < input_height - tile_height {
+            // remove top row
+            let row = input.slice(s![(tile_top - 1) as usize, 0..tile_width as usize]);
+            row.for_each(|pix| {
+                let hist_index: usize = (*pix).into();
+                *unsafe { hist.uget_mut(hist_index) } -= 1;
+            });
+            // add bottom row
+            let row = input.slice(s![
+                (tile_top + tile_height - 1) as usize,
+                0..tile_width as usize
+            ]);
+            row.for_each(|pix| {
+                let hist_index: usize = (*pix).into();
+                *unsafe { hist.uget_mut(hist_index) } += 1;
+            });
+            hist_prev_row.assign(&hist);
+        }
+
+        for x in 0..input_width {
+            let tile_left = if x < tile_width / 2 {
+                0
+            } else {
+                x - tile_width / 2
+            };
+            let tile_top = u32::min(tile_top, input_height - tile_height - 1);
+            if tile_left > 0 && tile_left < input_width - tile_width {
+                // remove left column
+                let col = input.slice(s![
+                    tile_top as usize..(tile_top + tile_height) as usize,
+                    tile_left as usize - 1
+                ]);
+                col.for_each(|pix| {
+                    let hist_index: usize = (*pix).into();
+                    *unsafe { hist.uget_mut(hist_index) } -= 1;
+                });
+                // add right column
+                let col = input.slice(s![
+                    tile_top as usize..(tile_top + tile_height) as usize,
+                    (tile_left + tile_width - 1) as usize
+                ]);
+                col.for_each(|pix| {
+                    let hist_index: usize = (*pix).into();
+                    *unsafe { hist.uget_mut(hist_index) } += 1;
+                });
+            }
+            if clip_limit >= 1 {
+                hist_clipped.assign(&hist);
+                clip_hist(hist_clipped.as_slice_mut().unwrap(), clip_limit);
+                calc_lut(
+                    hist_clipped.as_slice().unwrap(),
+                    lut.as_slice_mut().unwrap(),
+                    lut_scale,
+                );
+            } else {
+                calc_lut(
+                    hist.as_slice().unwrap(),
+                    lut.as_slice_mut().unwrap(),
+                    lut_scale,
+                );
+            }
+            let input_pixel: u32 = (*input.get((y as usize, x as usize)).unwrap()).into();
+            let output_pixel = *lut.get(input_pixel as usize).unwrap();
+            *output.get_mut((y as usize, x as usize)).unwrap() = output_pixel;
+        }
+    }
+    Ok(output)
+}
+
+pub fn clahe_image_wo_interpolation<T, S>(
+    input: &ImageBuffer<Luma<T>, Vec<T>>,
+    tile_width: u32,
+    tile_height: u32,
+    clip_limit: u32,
+) -> Result<ImageBuffer<Luma<S>, Vec<S>>, ClaheError>
+where
+    T: image::Primitive + Into<usize> + Into<u32> + Ord + RoundFrom + Default + 'static,
+    S: image::Primitive + Into<usize> + Into<u32> + Ord + RoundFrom + 'static,
+    f32: From<T> + From<S>,
+    u32: From<T>,
+    usize: From<T>,
+{
+    let (input_width, input_height) = input.dimensions();
+    let arr = clahe_wo_interpolation(image2array_view(input), tile_width, tile_height, clip_limit)?;
+    Ok(
+        ImageBuffer::<Luma<S>, Vec<S>>::from_vec(input_width, input_height, arr.into_raw_vec())
+            .unwrap(),
+    )
 }
 
 pub fn clahe_ndarray<S, T>(

@@ -1,4 +1,4 @@
-use clahe::clahe_image;
+use clahe::{clahe_image, clahe_image_wo_interpolation};
 use std::path::PathBuf;
 
 #[macro_use]
@@ -25,7 +25,7 @@ struct Args {
     /// Clip limit
     #[clap(long = "limit", default_value_t = 40)]
     clip_limit: u32,
-    /// Sampling rate for tile
+    /// Sampling rate for tile. Specify 0 for no interpolation
     #[clap(long = "sample", default_value_t = 1.0)]
     tile_sample: f64,
 
@@ -38,38 +38,69 @@ fn main() -> Result<()> {
     env_logger::init();
     let args = Args::parse();
     let im = image::open(&args.input).with_context(|| format!("Loading {:?}", args.input))?;
+    let wo_interpolation = args.tile_sample == 0.0;
 
     info!("CLAHE");
     let output = match im {
         DynamicImage::ImageLuma8(img) => {
             debug!("u8 input");
-            DynamicImage::ImageLuma8(clahe_image(
-                &img,
-                args.grid_width,
-                args.grid_height,
-                args.clip_limit,
-                args.tile_sample,
-            )?)
+            let clahed = if wo_interpolation {
+                clahe_image_wo_interpolation(
+                    &img,
+                    img.width() / args.grid_width,
+                    img.height() / args.grid_height,
+                    args.clip_limit,
+                )?
+            } else {
+                clahe_image(
+                    &img,
+                    args.grid_width,
+                    args.grid_height,
+                    args.clip_limit,
+                    args.tile_sample,
+                )?
+            };
+            DynamicImage::ImageLuma8(clahed)
         }
         DynamicImage::ImageLuma16(img) => {
             if args.eight {
                 debug!("u16 input and u8 output");
-                DynamicImage::ImageLuma8(clahe_image(
-                    &img,
-                    args.grid_width,
-                    args.grid_height,
-                    args.clip_limit,
-                    args.tile_sample,
-                )?)
+                let clahed = if wo_interpolation {
+                    clahe_image_wo_interpolation(
+                        &img,
+                        img.width() / args.grid_width,
+                        img.height() / args.grid_height,
+                        args.clip_limit,
+                    )?
+                } else {
+                    clahe_image(
+                        &img,
+                        args.grid_width,
+                        args.grid_height,
+                        args.clip_limit,
+                        args.tile_sample,
+                    )?
+                };
+                DynamicImage::ImageLuma8(clahed)
             } else {
                 debug!("u16 input and u16 output");
-                DynamicImage::ImageLuma16(clahe_image(
-                    &img,
-                    args.grid_width,
-                    args.grid_height,
-                    args.clip_limit,
-                    args.tile_sample,
-                )?)
+                let clahed = if wo_interpolation {
+                    clahe_image_wo_interpolation(
+                        &img,
+                        img.width() / args.grid_width,
+                        img.height() / args.grid_height,
+                        args.clip_limit,
+                    )?
+                } else {
+                    clahe_image(
+                        &img,
+                        args.grid_width,
+                        args.grid_height,
+                        args.clip_limit,
+                        args.tile_sample,
+                    )?
+                };
+                DynamicImage::ImageLuma16(clahed)
             }
         }
         DynamicImage::ImageRgb8(img) => {
@@ -87,13 +118,22 @@ fn main() -> Result<()> {
             let arr_lum = arr_hsl.map(|hsl| (hsl.l * 255.0).round() as u8);
             let arr_lum = Array2::from_shape_vec(image_shape, arr_lum.into_raw_vec())
                 .context("Rgb array to luminosity array")?;
-            let new_lum: Array2<u8> = clahe::clahe_ndarray(
-                arr_lum.view(),
-                args.grid_width,
-                args.grid_height,
-                args.clip_limit,
-                args.tile_sample,
-            )?;
+            let new_lum: Array2<u8> = if wo_interpolation {
+                clahe::clahe_wo_interpolation(
+                    arr_lum.view(),
+                    args.grid_width,
+                    args.grid_height,
+                    args.clip_limit,
+                )?
+            } else {
+                clahe::clahe_ndarray(
+                    arr_lum.view(),
+                    args.grid_width,
+                    args.grid_height,
+                    args.clip_limit,
+                    args.tile_sample,
+                )?
+            };
             let new_lum = Array1::from_shape_vec(new_lum.len(), new_lum.into_raw_vec())?;
             arr_hsl.zip_mut_with(&new_lum, |hsl, lum| {
                 hsl.l = *lum as f32 / 255.0;

@@ -16,7 +16,7 @@ fn exec_clahe(size: usize, tile_sample: f64, random_input: bool) -> Array2<u8> {
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let mut group = c.benchmark_group("clahe size");
+    let mut group = c.benchmark_group("Input size");
     for size in [256, 512, 768, 1024] {
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, &size| {
             b.iter(|| exec_clahe(size, 1.0, true));
@@ -24,25 +24,25 @@ fn criterion_benchmark(c: &mut Criterion) {
     }
     group.finish();
 
-    let mut group = c.benchmark_group("clahe sample");
+    let mut group = c.benchmark_group("LUT sample");
     for tile_sample in 1..=8 {
         group.bench_with_input(
             BenchmarkId::from_parameter(tile_sample),
             &tile_sample,
             |b, &tile_sample| {
-                b.iter(|| exec_clahe(1024, tile_sample as f64, true));
+                b.iter(|| exec_clahe(512, tile_sample as f64, true));
             },
         );
     }
     group.finish();
 
-    for size in [1024] {
+    for size in [512] {
         let arr: Array2<u8> =
             Array2::random((size, size), Uniform::new(0., 255.)).mapv(|e| e as u8);
         let grid_width = 8;
         let grid_height = 8;
         let clip_limit = 40;
-        let mut group = c.benchmark_group(format!("lut {size}"));
+        let mut group = c.benchmark_group(format!("LUT {size}"));
         for tile_sample in [1.0, 2.0, 4.0, 8.0, 16.0] {
             let (
                 tile_width,
@@ -101,5 +101,48 @@ fn criterion_benchmark(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, criterion_benchmark);
+fn criterion_u16(c: &mut Criterion) {
+    let mut group = c.benchmark_group("clahe u16");
+    for max_value in [256u16, 1 << 9, 1 << 10, 1 << 11, 1 << 12] {
+        let arr: Array2<u16> =
+            Array2::random((128, 128), Uniform::new(0., max_value as f64)).mapv(|e| e as u16);
+
+        let grid_width = 8;
+        let grid_height = 8;
+        let clip_limit = 40;
+        group.bench_with_input(
+            BenchmarkId::new("Sampled", max_value),
+            &max_value,
+            |b, &_max_value| {
+                b.iter(|| {
+                    let result: Array2<u16> =
+                        clahe::clahe_ndarray(arr.view(), grid_width, grid_height, clip_limit, 2.0)
+                            .unwrap();
+                    result
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("W/o interpolation", max_value),
+            &max_value,
+            |b, &_max_value| {
+                b.iter(|| {
+                    let result: Array2<u16> = clahe::clahe_wo_interpolation(
+                        arr.view(),
+                        u32::try_from(arr.ncols()).unwrap() / grid_width,
+                        u32::try_from(arr.nrows()).unwrap() / grid_height,
+                        clip_limit,
+                    )
+                    .unwrap();
+                    result
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, criterion_benchmark, criterion_u16);
 criterion_main!(benches);
