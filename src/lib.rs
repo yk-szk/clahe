@@ -48,6 +48,37 @@ fn clip_hist(hist: &mut HistType, limit: u32) {
     }
 }
 
+fn clip_hist_w_end(hist: &mut HistType, limit: u32, calc_end: usize) {
+    let mut clipped: u32 = 0;
+
+    hist.iter_mut().for_each(|count| {
+        if *count > limit {
+            clipped += *count - limit;
+            *count = limit;
+        }
+    });
+
+    if clipped > 0 {
+        let hist_size = hist.len() as u32;
+        let redist_batch = clipped / hist_size;
+
+        if redist_batch > 0 {
+            hist.iter_mut().take(calc_end).for_each(|count| {
+                *count += redist_batch;
+            });
+        }
+
+        let residual = (clipped - redist_batch * hist_size) as usize;
+        if residual > 0 {
+            let step = usize::max(1, hist_size as usize / residual);
+            let end = usize::min(calc_end, step * residual);
+            hist.iter_mut().take(end).step_by(step).for_each(|count| {
+                *count += 1;
+            });
+        }
+    }
+}
+
 /// Round half to even
 #[cfg(target_arch = "x86_64")]
 unsafe fn round(f: f32) -> i32 {
@@ -496,7 +527,6 @@ where
     let mut hist: Array1<u32> = Array1::zeros(hist_size);
     let mut hist_clipped: Array1<u32> = Array1::zeros(hist_size);
     let mut hist_prev_row: Array1<u32> = Array1::zeros(hist_size);
-    let mut lut = Array1::zeros(hist_size);
 
     // use full tile for the first histogram
     let top_left_tile = input.slice(s![0..tile_height as usize, 0..tile_width as usize]);
@@ -557,23 +587,21 @@ where
                     *unsafe { hist.uget_mut(hist_index) } += 1;
                 });
             }
-            if clip_limit >= 1 {
-                hist_clipped.assign(&hist);
-                clip_hist(hist_clipped.as_slice_mut().unwrap(), clip_limit);
-                calc_lut(
-                    hist_clipped.as_slice().unwrap(),
-                    lut.as_slice_mut().unwrap(),
-                    lut_scale,
-                );
-            } else {
-                calc_lut(
-                    hist.as_slice().unwrap(),
-                    lut.as_slice_mut().unwrap(),
-                    lut_scale,
-                );
-            }
             let input_pixel: u32 = (*input.get((y as usize, x as usize)).unwrap()).into();
-            let output_pixel = *lut.get(input_pixel as usize).unwrap();
+            let ref_hist = if clip_limit >= 1 {
+                hist_clipped.assign(&hist);
+                // clip_hist(hist_clipped.as_slice_mut().unwrap(), clip_limit);
+                clip_hist_w_end(
+                    hist_clipped.as_slice_mut().unwrap(),
+                    clip_limit,
+                    input_pixel as usize + 1,
+                );
+                hist_clipped.as_slice().unwrap()
+            } else {
+                hist.as_slice().unwrap()
+            };
+            let cumsum = ref_hist.iter().take(input_pixel as usize + 1).sum::<u32>();
+            let output_pixel = T::round_from(cumsum as f32 * lut_scale);
             *output.get_mut((y as usize, x as usize)).unwrap() = output_pixel;
         }
     }
